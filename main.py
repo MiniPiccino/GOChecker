@@ -21,12 +21,15 @@ from openpyxl.styles import NamedStyle
 from datetime import datetime
 # Removed unused import that could not be resolved
 #from msgraph.core import GraphClient
-
-
+from datetime import datetime, timedelta, timezone
+# from msgraph.generated.me.calendar.calendar_view.calendar_view_request_builder import (
+#     CalendarViewRequestBuilderGetQueryParameters,
+#     CalendarViewRequestBuilderGetRequestConfiguration
+# )
 
 #result = await graph_client.me.calendar.events.get()
 async def main():
-    scopes = ['User.Read', 'Calendars.Read']
+    scopes = ['User.Read', 'Calendars.Read'] 
 
 # Multi-tenant apps can use "common",
 # single-tenant apps must use the tenant ID from the Azure portal
@@ -40,23 +43,37 @@ async def main():
         tenant_id=tenant_id,
         client_id=client_id)
     graph_client = GraphServiceClient(credential, scopes)
-    query_params = EventsRequestBuilder.EventsRequestBuilderGetQueryParameters(
-		filter="contains(subject,'GO')",
-    )
 
-    request_configuration = RequestConfiguration(
-    query_parameters = query_params,
-    )
 
-    result = await graph_client.me.calendar.events.get(request_configuration = request_configuration)
-    #print(result)
+    start_datetime = (datetime.now(timezone.utc) - timedelta(days=365)).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
+    end_datetime = (datetime.now(timezone.utc) + timedelta(days=365)).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
+    print(f"Querying from {start_datetime} to {end_datetime}")
+    url = f"https://graph.microsoft.com/v1.0/me/calendar/calendarView?startDateTime={start_datetime}&endDateTime={end_datetime}"
 
+    
+    all_events = []
+    #page = graph_client.me.calendar.calendar_view.with_url(url)
+    calendar_view_builder = graph_client.me.calendar.calendar_view.with_url(url)
+    page = await calendar_view_builder.get()
+
+    while page:
+        all_events.extend(page.value)
+
+        # Get next page if available
+        if page.odata_next_link:
+            page = await graph_client.me.calendar.calendar_view.with_url(page.odata_next_link).get()
+        else:
+            break
 
     excel_file = "GO.xlsx"
-    sheet_name = "Sheet1"
+    sheet_name = "Vacations"
+
 
     filtered_events = []
-    for event in result.value:
+
+    print(f"Filtered events with 'GO': {len(filtered_events)}")
+
+    for event in all_events:
         if re.search(r'\bGO\b', event.subject, re.IGNORECASE):
             print(f"{event.subject} at {event.start.date_time} {event.end.date_time}")
             filtered_events.append({
@@ -64,7 +81,6 @@ async def main():
                 'start': event.start.date_time,
                 'end': event.end.date_time
             })
-    # Create or open the workbook
     if os.path.exists(excel_file): 
         wb = openpyxl.load_workbook(excel_file)
         ws = wb[sheet_name] if sheet_name in wb.sheetnames else wb.create_sheet(sheet_name)
@@ -78,20 +94,12 @@ async def main():
         for col in range(1, 4):
             ws.cell(row=1, column=col).font = Font(bold=True)
 
-    # if "date_style" not in wb.named_styles:
-    #     date_style = NamedStyle(name="date_style", number_format="YYYY-MM-DD")
-    #     wb.add_named_style(date_style)
-    # else:
-    #     date_style = wb.named_styles["date_style"]
-
-   #date_style = NamedStyle(name="date_style", number_format="YYYY-MM-DD")
 
     for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=3):
         for cell in row:
             cell.value = None
     # Find next empty row
     next_row = 2
-
     # Append new events
     for i, event_data in enumerate(filtered_events, start=next_row):
         start_time = datetime.fromisoformat(event_data['start'])
