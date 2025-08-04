@@ -83,7 +83,6 @@ def authenticate_device_flow():
 
 
 hr_holidays = holidays.country_holidays("HR")
-
 def is_working_day(date):
     return date.weekday() < 5 and date not in hr_holidays
 
@@ -112,18 +111,17 @@ def fetch_calendar_events(headers, start_datetime, end_datetime, keyword):
             organizer = ev.get("organizer", {}).get("emailAddress", {}).get("name", "Unknown")
             start = pd.to_datetime(ev.get("start", {}).get("dateTime")).normalize()
             end = pd.to_datetime(ev.get("end", {}).get("dateTime")).normalize()
-            all_dates = pd.date_range(start=start, end=end)
+            all_dates = pd.date_range(start=start, end=end - timedelta(days=1))
 
             for d in all_dates:
                 date_only = d.date()
-                if is_working_day(date_only):
+                if is_working_day(date_only) and (start_datetime <= date_only <= end_datetime):
                     vacation_rows.append({
                         "Name": organizer,
                         "Date": date_only,
                         "Weekday": date_only.strftime("%A")
                     })
-
-
+    print(f"Filtered events with '{keyword}': {(vacation_rows)}")
     return pd.DataFrame(vacation_rows)
 
 # def get_calendar_events(graph_client, start_datetime, end_datetime, keyword):
