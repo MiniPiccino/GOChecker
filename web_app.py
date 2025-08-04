@@ -84,10 +84,9 @@ def authenticate_device_flow():
 
 hr_holidays = holidays.country_holidays("HR")
 
-def working_days_between(start, end):
-    days = pd.date_range(start=start, end=end)
-    working_days = [d for d in days if d.weekday() < 5 and d.date() not in hr_holidays]
-    return len(working_days)
+def is_working_day(date):
+    return date.weekday() < 5 and date not in hr_holidays
+
 def fetch_calendar_events(headers, start_datetime, end_datetime, keyword):
     start = datetime.combine(start_datetime, datetime.min.time()).astimezone(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
     end = datetime.combine(end_datetime, datetime.max.time()).astimezone(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
@@ -102,19 +101,30 @@ def fetch_calendar_events(headers, start_datetime, end_datetime, keyword):
         all_events.extend(events)
         url = result.get("@odata.nextLink", None)
 
-    filtered = []
+    vacation_rows = []
+
     for ev in all_events:
         subject = ev.get("subject", "")
-        if re.search(r'\bg[\.\s]?o\b', subject, re.IGNORECASE):
+        if (
+            re.search(r'\bg[\.\s]?o\b', subject, re.IGNORECASE) and
+            not re.search(r'\bcanceled\b|\botkazano\b', subject, re.IGNORECASE)
+        ):
             organizer = ev.get("organizer", {}).get("emailAddress", {}).get("name", "Unknown")
-            start = pd.to_datetime(ev.get("start", {}).get("dateTime"))
-            end = pd.to_datetime(ev.get("end", {}).get("dateTime"))
-            #days = (end.date() - start.date()).days + 1
-            days = working_days_between(start.date(), end.date())
-            if days > 0:
-                filtered.append({"Name": organizer, "Start": start.date(), "End": end.date(), "Days": days})
+            start = pd.to_datetime(ev.get("start", {}).get("dateTime")).normalize()
+            end = pd.to_datetime(ev.get("end", {}).get("dateTime")).normalize()
+            all_dates = pd.date_range(start=start, end=end)
 
-    return pd.DataFrame(filtered)
+            for d in all_dates:
+                date_only = d.date()
+                if is_working_day(date_only):
+                    vacation_rows.append({
+                        "Name": organizer,
+                        "Date": date_only,
+                        "Weekday": date_only.strftime("%A")
+                    })
+
+
+    return pd.DataFrame(vacation_rows)
 
 # def get_calendar_events(graph_client, start_datetime, end_datetime, keyword):
 #     return asyncio.get_event_loop().run_until_complete(
@@ -123,10 +133,21 @@ def fetch_calendar_events(headers, start_datetime, end_datetime, keyword):
 def get_calendar_events(graph_client, start_datetime, end_datetime, keyword):
     return fetch_calendar_events(graph_client, start_datetime, end_datetime, keyword)
 def summarize_vacation(events_df):
-    used = events_df.groupby("Name")["Days"].sum().reset_index().rename(columns={"Days": "Used"})
-    used["Allowance"] = 25
-    used["Remaining"] = used["Allowance"] - used["Used"]
-    return used
+    # Load allowances from CSV
+    try:
+        allowance_df = pd.read_csv("vacation_allowances.csv")
+    except FileNotFoundError:
+        st.warning("⚠️ 'vacation_allowance.csv' not found. Defaulting to 25 days for everyone.")
+        allowance_df = pd.DataFrame(columns=["Name", "Allowance"])
+
+    # Count used vacation days
+    used = events_df.groupby("Name")["Date"].count().reset_index().rename(columns={"Date": "Used"})
+
+    # Merge with allowance
+    merged = pd.merge(used, allowance_df, on="Name", how="left")
+    merged["Allowance"] = merged["Allowance"].fillna(25).astype(int)
+    merged["Remaining"] = merged["Allowance"] - merged["Used"]
+    return merged
 
 # --- Streamlit UI ---
 st.title("Vacation Tracker - GO Events Summary")
@@ -135,11 +156,14 @@ st.title("Vacation Tracker - GO Events Summary")
 # headers = authenticate_graph()
 headers = authenticate_device_flow()
 
-start_date = st.date_input("Start Date", datetime.now() - timedelta(days=30))
-end_date = st.date_input("End Date", datetime.now() + timedelta(days=30))
-keyword = st.text_input("Keyword to Filter Events", "GO")
+with st.sidebar:
+    st.header("Filter Settings")
+    start_date = st.date_input("Start Date", datetime.now() - timedelta(days=30))
+    end_date = st.date_input("End Date", datetime.now() + timedelta(days=30))
+    keyword = st.text_input("Keyword to Filter Events", "GO")
+    fetch = st.button("Fetch and Calculate")
 
-if st.button("Fetch and Calculate Vacation Summary"):
+if fetch:
     with st.spinner("Fetching events and calculating..."):
         events_df = get_calendar_events(headers, start_date, end_date, keyword)
         summary_df = summarize_vacation(events_df)
