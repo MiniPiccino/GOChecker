@@ -10,13 +10,16 @@ import io
 import threading
 import time
 import holidays
+from dotenv import load_dotenv
+import os
+from datetime import date
 
 #nest_asyncio.apply()
+load_dotenv() 
 
-
-TENANT_ID = "94aa9436-2653-434c-bd47-1124432cb7d7"
-CLIENT_ID = "b9d8662f-5800-4498-a4f1-28b92bea4f39"
-SCOPE = "https://graph.microsoft.com/.default"
+TENANT_ID = os.getenv("TENANT_ID")
+CLIENT_ID = os.getenv("CLIENT_ID")
+SCOPE = os.getenv("SCOPE", "https://graph.microsoft.com/.default")
 
 DEVICE_CODE_URL = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/devicecode"
 TOKEN_URL = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
@@ -121,7 +124,6 @@ def fetch_calendar_events(headers, start_datetime, end_datetime, keyword):
                         "Date": date_only,
                         "Weekday": date_only.strftime("%A")
                     })
-    print(f"Filtered events with '{keyword}': {(vacation_rows)}")
     return pd.DataFrame(vacation_rows)
 
 # def get_calendar_events(graph_client, start_datetime, end_datetime, keyword):
@@ -130,22 +132,74 @@ def fetch_calendar_events(headers, start_datetime, end_datetime, keyword):
 #     )
 def get_calendar_events(graph_client, start_datetime, end_datetime, keyword):
     return fetch_calendar_events(graph_client, start_datetime, end_datetime, keyword)
-def summarize_vacation(events_df):
-    # Load allowances from CSV
+
+
+def summarize_vacation(events_df, start_date, end_date):
+    events_df = events_df[(events_df["Date"] >= start_date) & (events_df["Date"] <= end_date)]
+
     try:
-        allowance_df = pd.read_csv("vacation_allowances.csv")
+        allowance_df = pd.read_csv("//step-nas/Razmjena/RAZMJENA 2016/DIGITALIZACIJA/MCPClients/GetGO/vacation_allowances.csv")
     except FileNotFoundError:
-        st.warning("⚠️ 'vacation_allowance.csv' not found. Defaulting to 25 days for everyone.")
+        st.warning("⚠️ 'vacation_allowances.csv' not found. Defaulting to 25 days for everyone.")
         allowance_df = pd.DataFrame(columns=["Name", "Allowance"])
 
-    # Count used vacation days
-    used = events_df.groupby("Name")["Date"].count().reset_index().rename(columns={"Date": "Used"})
+    enriched_rows = []
+    summary_rows = []
 
-    # Merge with allowance
-    merged = pd.merge(used, allowance_df, on="Name", how="left")
-    merged["Allowance"] = merged["Allowance"].fillna(25).astype(int)
-    merged["Remaining"] = merged["Allowance"] - merged["Used"]
-    return merged
+    for name, group in events_df.groupby("Name"):
+        allowance_value = allowance_df.loc[allowance_df["Name"] == name, "Allowance"].values
+        allowance = int(allowance_value[0]) if len(allowance_value) > 0 else 25
+
+        group = group.sort_values("Date").copy()
+        group["Allowance Year"] = None
+        group["Used Status"] = None
+
+        # Build allowance pool: {2023: {"remaining": 25, "valid_until": 2024-06-30}, ...}
+        allowance_pool = {}
+        for year in range(group["Date"].min().year - 1, group["Date"].max().year + 1):
+            allowance_pool[year] = {
+                "remaining": allowance,
+                "valid_until": date(year + 1, 6, 30)
+            }
+
+        over_limit = 0
+        usage_by_year = {}
+
+        for idx, row in group.iterrows():
+            used = False
+            for y in sorted(allowance_pool.keys()):
+                if row["Date"] <= allowance_pool[y]["valid_until"] and allowance_pool[y]["remaining"] > 0:
+                    allowance_pool[y]["remaining"] -= 1
+                    group.at[idx, "Allowance Year"] = y
+                    group.at[idx, "Used Status"] = "Within Allowance"
+                    usage_by_year[y] = usage_by_year.get(y, 0) + 1
+                    used = True
+                    break
+            if not used:
+                group.at[idx, "Used Status"] = "Over Allowance"
+                over_limit += 1
+
+        # Summary per person
+        summary = {
+            "Name": name,
+            "Used Total": len(group),
+            "Over Limit": over_limit,
+            "⚠️ Over Limit?": "Yes" if over_limit > 0 else "No"
+        }
+
+        # Add per-year used and remaining
+        for y in sorted(allowance_pool.keys()):
+            summary[f"Used {y}"] = usage_by_year.get(y, 0)
+            summary[f"Remaining {y}"] = allowance_pool[y]["remaining"]
+
+        summary_rows.append(summary)
+        enriched_rows.append(group)
+
+    summary_df = pd.DataFrame(summary_rows)
+    updated_events_df = pd.concat(enriched_rows, ignore_index=True)
+
+    return summary_df, updated_events_df
+
 
 # --- Streamlit UI ---
 st.title("Vacation Tracker - GO Events Summary")
@@ -164,15 +218,17 @@ with st.sidebar:
 if fetch:
     with st.spinner("Fetching events and calculating..."):
         events_df = get_calendar_events(headers, start_date, end_date, keyword)
-        summary_df = summarize_vacation(events_df)
+
+        summary_df, updated_events_df = summarize_vacation(events_df, start_date, end_date)
 
         st.success("Done!")
         st.subheader("Vacation Summary")
-        st.dataframe(summary_df)
+        st.dataframe(summary_df)  # ✅ Only display the summary
 
-        # Excel export
+        # ✅ Export both to Excel
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
             summary_df.to_excel(writer, sheet_name="Summary", index=False)
-            events_df.to_excel(writer, sheet_name="Events", index=False)
+            updated_events_df.to_excel(writer, sheet_name="Events", index=False)
+
         st.download_button("Download Excel Summary", buffer.getvalue(), file_name="vacation_summary.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
