@@ -17,12 +17,28 @@ from datetime import date
 #nest_asyncio.apply()
 load_dotenv() 
 
-TENANT_ID = os.getenv("TENANT_ID")
-CLIENT_ID = os.getenv("CLIENT_ID")
-SCOPE = os.getenv("SCOPE", "https://graph.microsoft.com/.default")
+# TENANT_ID = os.getenv("TENANT_ID")
+# CLIENT_ID = os.getenv("CLIENT_ID")
+# SCOPE = os.getenv("SCOPE", "https://graph.microsoft.com/.default")
 
-DEVICE_CODE_URL = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/devicecode"
-TOKEN_URL = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
+# DEVICE_CODE_URL = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/devicecode"
+# TOKEN_URL = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
+
+def _get_conf(key, default=None):
+    try:
+        return st.secrets.get(key, None) or os.getenv(key, default)
+    except Exception:
+        return os.getenv(key, default)
+
+TENANT_ID = _get_conf("TENANT_ID")
+CLIENT_ID = _get_conf("CLIENT_ID")
+# For Graph calendar calls you usually want delegated scopes:
+# e.g. "User.Read Calendars.Read"
+SCOPE = _get_conf("SCOPE", "https://graph.microsoft.com/.default")
+
+DEVICE_CODE_URL = f"https://login.microsoftonline.com/{TENANT_ID or 'common'}/oauth2/v2.0/devicecode"
+TOKEN_URL = f"https://login.microsoftonline.com/{TENANT_ID or 'common'}/oauth2/v2.0/token"
+
 @st.cache_resource
 def authenticate_device_flow():
     # Step 1: Request device code
