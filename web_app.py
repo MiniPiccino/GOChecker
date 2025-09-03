@@ -53,8 +53,8 @@ def authenticate_device_flow():
 
     data = response.json()
 
-    st.info("🔐 Microsoft Login Required")
-    st.markdown(f"👉 [Click here to log in]({data['verification_uri']})", unsafe_allow_html=True)
+    st.info("Microsoft Login Required")
+    st.markdown(f" [Click here to log in]({data['verification_uri']})", unsafe_allow_html=True)
     st.code(f"Enter this code: {data['user_code']}", language="text")
 
     device_code = data["device_code"]
@@ -73,7 +73,7 @@ def authenticate_device_flow():
             if token_response.status_code == 200:
                 token_data = token_response.json()
                 access_token = token_data["access_token"]
-                st.success("✅ Authentication successful.")
+                st.success("Authentication successful.")
                 return {
                     "Authorization": f"Bearer {access_token}",
                     "Accept": "application/json"
@@ -84,10 +84,10 @@ def authenticate_device_flow():
                 if error in ["authorization_pending", "slow_down"]:
                     continue
                 else:
-                    st.error(f"❌ Authentication failed: {error}")
+                    st.error(f" Authentication failed: {error}")
                     return None
 
-        st.error("⏰ Authentication timed out.")
+        st.error(" Authentication timed out.")
         return None
 
 
@@ -154,9 +154,9 @@ def summarize_vacation(events_df, start_date, end_date):
     events_df = events_df[(events_df["Date"] >= start_date) & (events_df["Date"] <= end_date)]
 
     try:
-        allowance_df = pd.read_csv("//step-nas/Razmjena/RAZMJENA 2016/DIGITALIZACIJA/MCPClients/GetGO/vacation_allowances.csv")
+        allowance_df = pd.read_csv("vacation_allowances.csv")
     except FileNotFoundError:
-        st.warning("⚠️ 'vacation_allowances.csv' not found. Defaulting to 25 days for everyone.")
+        st.warning("'vacation_allowances.csv' not found. Defaulting to 25 days for everyone.")
         allowance_df = pd.DataFrame(columns=["Name", "Allowance"])
 
     enriched_rows = []
