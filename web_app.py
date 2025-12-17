@@ -13,6 +13,7 @@ import holidays
 from dotenv import load_dotenv
 import os
 from datetime import date
+from collections import defaultdict
 
 #nest_asyncio.apply()
 load_dotenv() 
@@ -105,6 +106,44 @@ hr_holidays = holidays.country_holidays("HR")
 def is_working_day(date):
     return date.weekday() < 5 and date not in hr_holidays
 
+
+def load_allowances():
+    try:
+        allowance_df = pd.read_csv("vacation_allowances.csv")
+        return {
+            row["Name"]: int(row["Allowance"])
+            for _, row in allowance_df.iterrows()
+            if pd.notna(row.get("Name")) and pd.notna(row.get("Allowance"))
+        }
+    except FileNotFoundError:
+        st.warning("'vacation_allowances.csv' not found. Defaulting to 25 days for everyone.")
+        return {}
+    except Exception as exc:
+        st.error(f"Failed to read 'vacation_allowances.csv': {exc}")
+        return {}
+
+
+def load_carryover():
+    try:
+        carryover_df = pd.read_csv("vacation_carryover.csv")
+    except FileNotFoundError:
+        st.info("No carryover file found. Add 'vacation_carryover.csv' to track previous-year days.")
+        return {}
+    except Exception as exc:
+        st.error(f"Failed to read 'vacation_carryover.csv': {exc}")
+        return {}
+
+    carryover_map = {}
+    for _, row in carryover_df.iterrows():
+        try:
+            name = row["Name"]
+            year = int(row["Year"])
+            carry = int(row["Carryover"])
+            carryover_map[(name, year)] = carry
+        except Exception:
+            continue
+    return carryover_map
+
 def fetch_calendar_events(headers, start_datetime, end_datetime, keyword):
     start = datetime.combine(start_datetime, datetime.min.time()).astimezone(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
     end = datetime.combine(end_datetime, datetime.max.time()).astimezone(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
@@ -153,60 +192,60 @@ def get_calendar_events(graph_client, start_datetime, end_datetime, keyword):
 def summarize_vacation(events_df, start_date, end_date):
     events_df = events_df[(events_df["Date"] >= start_date) & (events_df["Date"] <= end_date)]
 
-    try:
-        allowance_df = pd.read_csv("vacation_allowances.csv")
-    except FileNotFoundError:
-        st.warning("'vacation_allowances.csv' not found. Defaulting to 25 days for everyone.")
-        allowance_df = pd.DataFrame(columns=["Name", "Allowance"])
+    allowances = load_allowances()
+    carryover = load_carryover()
+
+    if events_df.empty:
+        return pd.DataFrame(), events_df
 
     enriched_rows = []
     summary_rows = []
+    target_year = end_date.year
+    carryover_year = target_year - 1
+    carryover_expiry = date(target_year, 6, 30)
 
     for name, group in events_df.groupby("Name"):
-        allowance_value = allowance_df.loc[allowance_df["Name"] == name, "Allowance"].values
-        allowance = int(allowance_value[0]) if len(allowance_value) > 0 else 25
-
+        base_allowance = allowances.get(name, 25)
         group = group.sort_values("Date").copy()
-        group["Allowance Year"] = None
+        group["Year"] = group["Date"].apply(lambda d: d.year)
+        group["Allowance Year"] = group["Year"]
         group["Used Status"] = None
+        group["Carryover Window"] = ""
 
-        # Build allowance pool: {2023: {"remaining": 25, "valid_until": 2024-06-30}, ...}
-        allowance_pool = {}
-        for year in range(group["Date"].min().year - 1, group["Date"].max().year + 1):
-            allowance_pool[year] = {
-                "remaining": allowance,
-                "valid_until": date(year + 1, 6, 30)
-            }
-
-        over_limit = 0
-        usage_by_year = {}
+        usage_tracker = defaultdict(int)
+        usage_by_year = defaultdict(int)
 
         for idx, row in group.iterrows():
-            used = False
-            for y in sorted(allowance_pool.keys()):
-                if row["Date"] <= allowance_pool[y]["valid_until"] and allowance_pool[y]["remaining"] > 0:
-                    allowance_pool[y]["remaining"] -= 1
-                    group.at[idx, "Allowance Year"] = y
-                    group.at[idx, "Used Status"] = "Within Allowance"
-                    usage_by_year[y] = usage_by_year.get(y, 0) + 1
-                    used = True
-                    break
-            if not used:
-                group.at[idx, "Used Status"] = "Over Allowance"
-                over_limit += 1
+            year = row["Year"]
+            usage_tracker[year] += 1
+            usage_by_year[year] += 1
+            status = "Within Base Allowance" if usage_tracker[year] <= base_allowance else "Over Base Allowance"
+            group.at[idx, "Used Status"] = status
 
-        # Summary per person
+            if year == target_year and row["Date"] <= carryover_expiry:
+                group.at[idx, "Carryover Window"] = f"Eligible to use carryover until {carryover_expiry.isoformat()}"
+
+        used_total = len(group)
+        over_base = any(used > base_allowance for used in usage_by_year.values())
+        carryover_days = carryover.get((name, carryover_year), 0)
+        if carryover_days > 0:
+            carryover_status = f"Active until {carryover_expiry.isoformat()}" if end_date <= carryover_expiry else f"Expired on {carryover_expiry.isoformat()}"
+        else:
+            carryover_status = "No carryover recorded"
+
         summary = {
             "Name": name,
-            "Used Total": len(group),
-            "Over Limit": over_limit,
-            "⚠️ Over Limit?": "Yes" if over_limit > 0 else "No"
+            "Base Allowance": base_allowance,
+            f"Carryover from {carryover_year}": carryover_days,
+            "Carryover Status": carryover_status,
+            f"Used {target_year}": usage_by_year.get(target_year, 0),
+            "Used Total": used_total,
+            "⚠️ Over Base Limit?": "Yes" if over_base else "No"
         }
 
-        # Add per-year used and remaining
-        for y in sorted(allowance_pool.keys()):
-            summary[f"Used {y}"] = usage_by_year.get(y, 0)
-            summary[f"Remaining {y}"] = allowance_pool[y]["remaining"]
+        for y in sorted(usage_by_year.keys()):
+            summary[f"Used {y}"] = usage_by_year[y]
+            summary[f"Remaining {y} (base only)"] = max(base_allowance - usage_by_year[y], 0)
 
         summary_rows.append(summary)
         enriched_rows.append(group)
