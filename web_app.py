@@ -144,7 +144,7 @@ def load_carryover():
             continue
     return carryover_map
 
-def fetch_calendar_events(headers, start_datetime, end_datetime):
+def fetch_calendar_events(headers, start_datetime, end_datetime, include_all=False):
     start = datetime.combine(start_datetime, datetime.min.time()).astimezone(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
     end = datetime.combine(end_datetime, datetime.max.time()).astimezone(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
 
@@ -171,7 +171,7 @@ def fetch_calendar_events(headers, start_datetime, end_datetime):
     for ev in all_events:
         subject = ev.get("subject", "")
         categories = ev.get("categories", [])
-        if is_go_event(subject, categories) and not re.search(r'\bcanceled\b|\botkazano\b', subject, re.IGNORECASE):
+        if (include_all or is_go_event(subject, categories)) and not re.search(r'\bcanceled\b|\botkazano\b', subject, re.IGNORECASE):
             organizer = ev.get("organizer", {}).get("emailAddress", {}).get("name", "Unknown")
             start_dt = pd.to_datetime(ev.get("start", {}).get("dateTime"))
             end_dt = pd.to_datetime(ev.get("end", {}).get("dateTime"))
@@ -199,8 +199,8 @@ def fetch_calendar_events(headers, start_datetime, end_datetime):
 #     return asyncio.get_event_loop().run_until_complete(
 #         fetch_calendar_events(graph_client, start_datetime, end_datetime)
 #     )
-def get_calendar_events(graph_client, start_datetime, end_datetime):
-    df = fetch_calendar_events(graph_client, start_datetime, end_datetime)
+def get_calendar_events(graph_client, start_datetime, end_datetime, include_all=False):
+    df = fetch_calendar_events(graph_client, start_datetime, end_datetime, include_all=include_all)
     if df is None:
         return pd.DataFrame(columns=["Name", "Date", "Weekday"])
     return df
@@ -288,11 +288,20 @@ with st.sidebar:
     st.header("Filter Settings")
     start_date = st.date_input("Start Date", datetime.now() - timedelta(days=30))
     end_date = st.date_input("End Date", datetime.now() + timedelta(days=30))
+    debug_include_all = st.checkbox("Debug: include all events (ignore GO filter)", False)
+    debug_show_sample = st.checkbox("Debug: show first 10 matched days", False)
     fetch = st.button("Fetch and Calculate")
 
 if fetch:
     with st.spinner("Fetching events and calculating..."):
-        events_df = get_calendar_events(headers, start_date, end_date)
+        events_df = get_calendar_events(headers, start_date, end_date, include_all=debug_include_all)
+
+        if events_df.empty:
+            st.info("No events matched. Try enabling 'include all events' to inspect subjects/categories.")
+        else:
+            st.success(f"Found {len(events_df)} matching event days.")
+            if debug_show_sample:
+                st.dataframe(events_df.head(10))
 
         summary_df, updated_events_df = summarize_vacation(events_df, start_date, end_date)
 
