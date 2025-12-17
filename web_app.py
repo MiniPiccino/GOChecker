@@ -186,7 +186,8 @@ def fetch_calendar_events(headers, start_datetime, end_datetime):
                         "Date": date_only,
                         "Weekday": date_only.strftime("%A")
                     })
-    return pd.DataFrame(vacation_rows)
+    # Ensure consistent columns even when no events match.
+    return pd.DataFrame(vacation_rows, columns=["Name", "Date", "Weekday"])
 
 # def get_calendar_events(graph_client, start_datetime, end_datetime):
 #     return asyncio.get_event_loop().run_until_complete(
