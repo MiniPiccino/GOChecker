@@ -160,12 +160,18 @@ def fetch_calendar_events(headers, start_datetime, end_datetime):
 
     vacation_rows = []
 
+    def is_go_event(subject, categories):
+        subject = subject or ""
+        categories = categories or []
+        # Match GO in common variants: GO, go, g.o, g o, GO - …, GO: …
+        subject_match = bool(re.search(r'\bg[\s\.\-_:\/]*o\b', subject, re.IGNORECASE))
+        category_match = any(cat.lower() == "go" for cat in categories if isinstance(cat, str))
+        return subject_match or category_match
+
     for ev in all_events:
         subject = ev.get("subject", "")
-        if (
-            re.search(r'\bg[\.\s]?o\b', subject, re.IGNORECASE) and
-            not re.search(r'\bcanceled\b|\botkazano\b', subject, re.IGNORECASE)
-        ):
+        categories = ev.get("categories", [])
+        if is_go_event(subject, categories) and not re.search(r'\bcanceled\b|\botkazano\b', subject, re.IGNORECASE):
             organizer = ev.get("organizer", {}).get("emailAddress", {}).get("name", "Unknown")
             start_dt = pd.to_datetime(ev.get("start", {}).get("dateTime"))
             end_dt = pd.to_datetime(ev.get("end", {}).get("dateTime"))
