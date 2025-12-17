@@ -144,7 +144,7 @@ def load_carryover():
             continue
     return carryover_map
 
-def fetch_calendar_events(headers, start_datetime, end_datetime, keyword):
+def fetch_calendar_events(headers, start_datetime, end_datetime):
     start = datetime.combine(start_datetime, datetime.min.time()).astimezone(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
     end = datetime.combine(end_datetime, datetime.max.time()).astimezone(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
 
@@ -167,9 +167,16 @@ def fetch_calendar_events(headers, start_datetime, end_datetime, keyword):
             not re.search(r'\bcanceled\b|\botkazano\b', subject, re.IGNORECASE)
         ):
             organizer = ev.get("organizer", {}).get("emailAddress", {}).get("name", "Unknown")
-            start = pd.to_datetime(ev.get("start", {}).get("dateTime")).normalize()
-            end = pd.to_datetime(ev.get("end", {}).get("dateTime")).normalize()
-            all_dates = pd.date_range(start=start, end=end - timedelta(days=1))
+            start_dt = pd.to_datetime(ev.get("start", {}).get("dateTime"))
+            end_dt = pd.to_datetime(ev.get("end", {}).get("dateTime"))
+
+            # Treat end as exclusive only when it is exactly at midnight the next day (all-day events).
+            if end_dt.time() == datetime.min.time() and end_dt.date() > start_dt.date():
+                end_dt -= timedelta(days=1)
+
+            start_day = start_dt.normalize()
+            end_day = end_dt.normalize()
+            all_dates = pd.date_range(start=start_day, end=end_day, freq="D")
 
             for d in all_dates:
                 date_only = d.date()
@@ -181,12 +188,12 @@ def fetch_calendar_events(headers, start_datetime, end_datetime, keyword):
                     })
     return pd.DataFrame(vacation_rows)
 
-# def get_calendar_events(graph_client, start_datetime, end_datetime, keyword):
+# def get_calendar_events(graph_client, start_datetime, end_datetime):
 #     return asyncio.get_event_loop().run_until_complete(
-#         fetch_calendar_events(graph_client, start_datetime, end_datetime, keyword)
+#         fetch_calendar_events(graph_client, start_datetime, end_datetime)
 #     )
-def get_calendar_events(graph_client, start_datetime, end_datetime, keyword):
-    return fetch_calendar_events(graph_client, start_datetime, end_datetime, keyword)
+def get_calendar_events(graph_client, start_datetime, end_datetime):
+    return fetch_calendar_events(graph_client, start_datetime, end_datetime)
 
 
 def summarize_vacation(events_df, start_date, end_date):
@@ -267,12 +274,11 @@ with st.sidebar:
     st.header("Filter Settings")
     start_date = st.date_input("Start Date", datetime.now() - timedelta(days=30))
     end_date = st.date_input("End Date", datetime.now() + timedelta(days=30))
-    keyword = st.text_input("Keyword to Filter Events", "GO")
     fetch = st.button("Fetch and Calculate")
 
 if fetch:
     with st.spinner("Fetching events and calculating..."):
-        events_df = get_calendar_events(headers, start_date, end_date, keyword)
+        events_df = get_calendar_events(headers, start_date, end_date)
 
         summary_df, updated_events_df = summarize_vacation(events_df, start_date, end_date)
 
