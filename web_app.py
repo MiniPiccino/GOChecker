@@ -153,6 +153,10 @@ def fetch_calendar_events(headers, start_datetime, end_datetime, include_all=Fal
 
     while url:
         response = requests.get(url, headers=headers)
+        if response.status_code != 200:
+            st.error(f"Graph API error {response.status_code}: {response.text}")
+            break
+
         result = response.json()
         events = result.get("value", [])
         all_events.extend(events)
@@ -193,17 +197,22 @@ def fetch_calendar_events(headers, start_datetime, end_datetime, include_all=Fal
                         "Weekday": date_only.strftime("%A")
                     })
     # Ensure consistent columns even when no events match.
-    return pd.DataFrame(vacation_rows, columns=["Name", "Date", "Weekday"])
+    matched_df = pd.DataFrame(vacation_rows, columns=["Name", "Date", "Weekday"])
+    stats = {
+        "total_events": len(all_events),
+        "matched_events": len(vacation_rows)
+    }
+    return matched_df, stats
 
-# def get_calendar_events(graph_client, start_datetime, end_datetime):
+# def get_calendar_events(graph_client, start_datetime, end_datetime, include_all=False):
 #     return asyncio.get_event_loop().run_until_complete(
-#         fetch_calendar_events(graph_client, start_datetime, end_datetime)
+#         fetch_calendar_events(graph_client, start_datetime, end_datetime, include_all=include_all)
 #     )
 def get_calendar_events(graph_client, start_datetime, end_datetime, include_all=False):
-    df = fetch_calendar_events(graph_client, start_datetime, end_datetime, include_all=include_all)
+    df, stats = fetch_calendar_events(graph_client, start_datetime, end_datetime, include_all=include_all)
     if df is None:
-        return pd.DataFrame(columns=["Name", "Date", "Weekday"])
-    return df
+        return pd.DataFrame(columns=["Name", "Date", "Weekday"]), {"total_events": 0, "matched_events": 0}
+    return df, stats
 
 
 def summarize_vacation(events_df, start_date, end_date):
@@ -294,8 +303,9 @@ with st.sidebar:
 
 if fetch:
     with st.spinner("Fetching events and calculating..."):
-        events_df = get_calendar_events(headers, start_date, end_date, include_all=debug_include_all)
+        events_df, stats = get_calendar_events(headers, start_date, end_date, include_all=debug_include_all)
 
+        st.info(f"Graph returned {stats.get('total_events', 0)} events; matched {stats.get('matched_events', 0)} GO days.")
         if events_df.empty:
             st.info("No events matched. Try enabling 'include all events' to inspect subjects/categories.")
         else:
