@@ -193,10 +193,17 @@ def fetch_calendar_events(headers, start_datetime, end_datetime):
 #         fetch_calendar_events(graph_client, start_datetime, end_datetime)
 #     )
 def get_calendar_events(graph_client, start_datetime, end_datetime):
-    return fetch_calendar_events(graph_client, start_datetime, end_datetime)
+    df = fetch_calendar_events(graph_client, start_datetime, end_datetime)
+    if df is None:
+        return pd.DataFrame(columns=["Name", "Date", "Weekday"])
+    return df
 
 
 def summarize_vacation(events_df, start_date, end_date):
+    if events_df is None or "Date" not in events_df.columns:
+        st.warning("No events with dates found to summarize.")
+        return pd.DataFrame(), pd.DataFrame(columns=["Name", "Date"])
+
     events_df = events_df[(events_df["Date"] >= start_date) & (events_df["Date"] <= end_date)]
 
     allowances = load_allowances()
