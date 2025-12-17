@@ -169,6 +169,10 @@ def fetch_calendar_events(headers, start_datetime, end_datetime, include_all=Fal
         categories = categories or []
         # Match GO in common variants: GO, go, g.o, g o, GO - …, GO: …
         subject_match = bool(re.search(r'\bg[\s\.\-_:\/]*o\b', subject, re.IGNORECASE))
+        if not subject_match:
+            # Very permissive fallback: strip non-letters and look for "go".
+            subject_clean = re.sub(r'[^a-zA-Z]', '', subject).lower()
+            subject_match = "go" in subject_clean
         category_match = any(cat.lower() == "go" for cat in categories if isinstance(cat, str))
         return subject_match or category_match
 
