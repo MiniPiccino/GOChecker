@@ -167,8 +167,8 @@ def fetch_calendar_events(headers, start_datetime, end_datetime, include_all=Fal
     def is_go_event(subject, categories):
         subject = subject or ""
         categories = categories or []
-        # Match GO/go/g.o/g-o and their TBC variants.
-        go_pattern = r'(?i)\bg[\s\.\-]*o\b|\bg[\s\.\-]*o\s*[\-:]*\s*\(tbc\)'
+        # Match GO/go/g.o/g-o and TBC variants with flexible spacing/punctuation.
+        go_pattern = r'(?i)\bg[\s\.\-]*o\b(?:\s*[\-:]*\s*\(?tbc\)?)?'
         subject_match = bool(re.search(go_pattern, subject))
         category_match = any(cat.lower() == "go" for cat in categories if isinstance(cat, str))
         return subject_match or category_match
@@ -282,15 +282,22 @@ def summarize_vacation(events_df, start_date, end_date):
         over_base = any(used > base_allowance for used in usage_by_year.values())
         carryover_days = carryover.get((name, carryover_year), 0)
         if carryover_days > 0:
-            carryover_status = f"Active until {carryover_expiry.isoformat()}" if end_date <= carryover_expiry else f"Expired on {carryover_expiry.isoformat()}"
+            if end_date <= carryover_expiry:
+                carryover_status = f"Active until {carryover_expiry.isoformat()}"
+                carryover_usable = "Yes"
+            else:
+                carryover_status = f"Expired after {carryover_expiry.isoformat()} (not usable)"
+                carryover_usable = "No (expired)"
         else:
             carryover_status = "No carryover recorded"
+            carryover_usable = "No"
 
         summary = {
             "Name": name,
             "Base Allowance": base_allowance,
             f"Carryover from {carryover_year}": carryover_days,
             "Carryover Status": carryover_status,
+            "Carryover Usable?": carryover_usable,
             f"Used {target_year}": usage_by_year.get(target_year, 0),
             "Used Total": used_total,
             "⚠️ Over Base Limit?": "Yes" if over_base else "No"
