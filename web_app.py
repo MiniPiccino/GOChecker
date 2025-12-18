@@ -167,8 +167,8 @@ def fetch_calendar_events(headers, start_datetime, end_datetime, include_all=Fal
     def is_go_event(subject, categories):
         subject = subject or ""
         categories = categories or []
-        # Match only GO or GO(TBC) variants.
-        go_pattern = r'(?i)\bgo\b|\bgo\s*\(tbc\)'
+        # Match GO/go/g.o/g-o and their TBC variants.
+        go_pattern = r'(?i)\bg[\s\.\-]*o\b|\bg[\s\.\-]*o\s*[\-:]*\s*\(tbc\)'
         subject_match = bool(re.search(go_pattern, subject))
         category_match = any(cat.lower() == "go" for cat in categories if isinstance(cat, str))
         return subject_match or category_match
@@ -195,10 +195,12 @@ def fetch_calendar_events(headers, start_datetime, end_datetime, include_all=Fal
                     vacation_rows.append({
                         "Name": organizer,
                         "Date": date_only,
-                        "Weekday": date_only.strftime("%A")
+                        "Weekday": date_only.strftime("%A"),
+                        "Subject": subject,
+                        "Categories": ", ".join(categories) if categories else ""
                     })
     # Ensure consistent columns even when no events match.
-    matched_df = pd.DataFrame(vacation_rows, columns=["Name", "Date", "Weekday"])
+    matched_df = pd.DataFrame(vacation_rows, columns=["Name", "Date", "Weekday", "Subject", "Categories"])
     stats = {
         "total_events": len(all_events),
         "matched_events": len(vacation_rows)
@@ -212,14 +214,14 @@ def fetch_calendar_events(headers, start_datetime, end_datetime, include_all=Fal
 def get_calendar_events(graph_client, start_datetime, end_datetime, include_all=False):
     df, stats = fetch_calendar_events(graph_client, start_datetime, end_datetime, include_all=include_all)
     if df is None:
-        return pd.DataFrame(columns=["Name", "Date", "Weekday"]), {"total_events": 0, "matched_events": 0}
+        return pd.DataFrame(columns=["Name", "Date", "Weekday", "Subject", "Categories"]), {"total_events": 0, "matched_events": 0}
     return df, stats
 
 
 def summarize_vacation(events_df, start_date, end_date):
     if events_df is None or "Date" not in events_df.columns:
         st.warning("No events with dates found to summarize.")
-        return pd.DataFrame(), pd.DataFrame(columns=["Name", "Date"])
+        return pd.DataFrame(), pd.DataFrame(columns=["Name", "Date", "Weekday", "Subject", "Categories"])
 
     events_df = events_df[(events_df["Date"] >= start_date) & (events_df["Date"] <= end_date)]
 
@@ -312,7 +314,7 @@ if fetch:
         else:
             st.success(f"Found {len(events_df)} matching event days.")
             if debug_show_sample:
-                st.dataframe(events_df.head(10))
+                st.dataframe(events_df[["Name", "Date", "Weekday", "Subject", "Categories"]].head(10))
 
         summary_df, updated_events_df = summarize_vacation(events_df, start_date, end_date)
 
