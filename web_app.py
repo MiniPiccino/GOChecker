@@ -228,7 +228,7 @@ def summarize_vacation(events_df, start_date, end_date):
     allowances = load_allowances()
     carryover = load_carryover()
 
-    # Keep only people present in vacation_allowances.csv
+    # Determine which names to include in the report.
     if allowances:
         allowed_names = set(allowances.keys())
         before_count = len(events_df)
@@ -240,8 +240,11 @@ def summarize_vacation(events_df, start_date, end_date):
             st.info(f"Filtered out {removed} event rows for people not in vacation_allowances.csv.")
             if dropped:
                 st.caption(f"Skipped names: {', '.join(dropped)}")
+        report_names = allowed_names
+    else:
+        report_names = set(events_df["Name"].unique())
 
-    if events_df.empty:
+    if events_df.empty and not report_names:
         return pd.DataFrame(), events_df
 
     enriched_rows = []
@@ -250,13 +253,17 @@ def summarize_vacation(events_df, start_date, end_date):
     carryover_year = target_year - 1
     carryover_expiry = date(target_year, 6, 30)
 
-    for name, group in events_df.groupby("Name"):
+    for name in sorted(report_names):
+        group = events_df[events_df["Name"] == name].sort_values("Date").copy()
         base_allowance = allowances.get(name, 25)
-        group = group.sort_values("Date").copy()
-        group["Year"] = group["Date"].apply(lambda d: d.year)
-        group["Allowance Year"] = group["Year"]
-        group["Used Status"] = None
-        group["Carryover Window"] = ""
+        if not group.empty:
+            group["Year"] = group["Date"].apply(lambda d: d.year)
+            group["Allowance Year"] = group["Year"]
+            group["Used Status"] = None
+            group["Carryover Window"] = ""
+        else:
+            # Ensure expected columns even with no events.
+            group = pd.DataFrame(columns=["Name", "Date", "Weekday", "Subject", "Categories", "Year", "Allowance Year", "Used Status", "Carryover Window"])
 
         usage_tracker = defaultdict(int)
         usage_by_year = defaultdict(int)
