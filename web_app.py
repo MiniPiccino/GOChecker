@@ -228,6 +228,19 @@ def summarize_vacation(events_df, start_date, end_date):
     allowances = load_allowances()
     carryover = load_carryover()
 
+    # Keep only people present in vacation_allowances.csv
+    if allowances:
+        allowed_names = set(allowances.keys())
+        before_count = len(events_df)
+        names_before = set(events_df["Name"].unique())
+        events_df = events_df[events_df["Name"].isin(allowed_names)]
+        removed = before_count - len(events_df)
+        if removed > 0:
+            dropped = sorted(names_before - allowed_names)
+            st.info(f"Filtered out {removed} event rows for people not in vacation_allowances.csv.")
+            if dropped:
+                st.caption(f"Skipped names: {', '.join(dropped)}")
+
     if events_df.empty:
         return pd.DataFrame(), events_df
 
