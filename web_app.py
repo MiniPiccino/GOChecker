@@ -314,7 +314,19 @@ st.title("Vacation Tracker - GO Events Summary")
 
 #graph_client = authenticate_graph()
 # headers = authenticate_graph()
-headers = authenticate_device_flow()
+
+def get_auth_headers():
+    """Persist headers in session so the login prompts disappear after success."""
+    if "auth_headers" in st.session_state:
+        return st.session_state["auth_headers"]
+    headers = authenticate_device_flow()
+    if headers:
+        st.session_state["auth_headers"] = headers
+    return headers
+
+headers = get_auth_headers()
+if headers is None:
+    st.stop()
 
 with st.sidebar:
     st.header("Filter Settings")
