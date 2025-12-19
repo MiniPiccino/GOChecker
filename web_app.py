@@ -450,8 +450,6 @@ with st.sidebar:
     st.header("Filter Settings")
     start_date = st.date_input("Start Date", datetime.now() - timedelta(days=30))
     end_date = st.date_input("End Date", datetime.now() + timedelta(days=30))
-    debug_include_all = st.checkbox("Debug: include all events (ignore GO filter)", False)
-    debug_show_sample = st.checkbox("Debug: show first 10 matched days", False)
     use_cached_week = st.checkbox("Use cached weekly snapshot if available", True)
     auto_refresh_stale = st.checkbox("Auto-refresh stale weekly snapshot", True)
     fetch = st.button("Fetch and Calculate")
@@ -479,16 +477,9 @@ if fetch:
                     st.success(f"Loaded cached snapshot for {iso_year}-W{iso_week}.")
 
         if not cache_used:
-            events_df, stats = get_calendar_events(headers, start_date, end_date, include_all=debug_include_all)
+            events_df, stats = get_calendar_events(headers, start_date, end_date, include_all=False)
 
             st.info(f"Graph returned {stats.get('total_events', 0)} events; matched {stats.get('matched_events', 0)} GO days.")
-            if events_df.empty:
-                st.info("No events matched. Try enabling 'include all events' to inspect subjects/categories.")
-            else:
-                st.success(f"Found {len(events_df)} matching event days.")
-                if debug_show_sample:
-                    st.dataframe(events_df[["Name", "Date", "Weekday", "Subject", "Categories"]].head(10))
-
             summary_df, updated_events_df = summarize_vacation(events_df, start_date, end_date)
             save_week_snapshot(start_date, end_date, summary_df, updated_events_df)
             st.caption(f"Snapshot saved for {iso_year}-W{iso_week}.")
