@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 import os
 from datetime import date
 from pathlib import Path
+from urllib.parse import quote
 from collections import defaultdict
 
 #nest_asyncio.apply()
@@ -38,6 +39,7 @@ CLIENT_ID = _get_conf("CLIENT_ID")
 # e.g. "User.Read Calendars.Read"
 SCOPE = _get_conf("SCOPE", "https://graph.microsoft.com/.default")
 CLIENT_SECRET = _get_conf("CLIENT_SECRET")
+TARGET_MAILBOX = _get_conf("TARGET_MAILBOX") or _get_conf("TARGET_USER") or _get_conf("USER_UPN")
 
 DEVICE_CODE_URL = f"https://login.microsoftonline.com/{TENANT_ID or 'common'}/oauth2/v2.0/devicecode"
 TOKEN_URL = f"https://login.microsoftonline.com/{TENANT_ID or 'common'}/oauth2/v2.0/token"
@@ -249,11 +251,15 @@ def is_snapshot_stale(end_date, max_age_days=7):
     age = datetime.utcnow() - fetched_at.to_pydatetime()
     return age > timedelta(days=max_age_days)
 
-def fetch_calendar_events(headers, start_datetime, end_datetime, include_all=False):
+def fetch_calendar_events(headers, start_datetime, end_datetime, include_all=False, target_user=None):
     start = datetime.combine(start_datetime, datetime.min.time()).astimezone(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
     end = datetime.combine(end_datetime, datetime.max.time()).astimezone(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
 
-    url = f"https://graph.microsoft.com/v1.0/me/calendar/calendarView?startDateTime={start}&endDateTime={end}"
+    if target_user:
+        user_part = quote(target_user)
+        url = f"https://graph.microsoft.com/v1.0/users/{user_part}/calendar/calendarView?startDateTime={start}&endDateTime={end}"
+    else:
+        url = f"https://graph.microsoft.com/v1.0/me/calendar/calendarView?startDateTime={start}&endDateTime={end}"
     all_events = []
 
     while url:
@@ -312,12 +318,12 @@ def fetch_calendar_events(headers, start_datetime, end_datetime, include_all=Fal
     }
     return matched_df, stats
 
-# def get_calendar_events(graph_client, start_datetime, end_datetime, include_all=False):
+# def get_calendar_events(graph_client, start_datetime, end_datetime, include_all=False, target_user=None):
 #     return asyncio.get_event_loop().run_until_complete(
-#         fetch_calendar_events(graph_client, start_datetime, end_datetime, include_all=include_all)
+#         fetch_calendar_events(graph_client, start_datetime, end_datetime, include_all=include_all, target_user=target_user)
 #     )
-def get_calendar_events(graph_client, start_datetime, end_datetime, include_all=False):
-    df, stats = fetch_calendar_events(graph_client, start_datetime, end_datetime, include_all=include_all)
+def get_calendar_events(graph_client, start_datetime, end_datetime, include_all=False, target_user=None):
+    df, stats = fetch_calendar_events(graph_client, start_datetime, end_datetime, include_all=include_all, target_user=target_user)
     if df is None:
         return pd.DataFrame(columns=["Name", "Date", "Weekday", "Subject", "Categories"]), {"total_events": 0, "matched_events": 0}
     return df, stats
@@ -428,22 +434,26 @@ st.title("Vacation Tracker - GO Events Summary")
 # headers = authenticate_graph()
 
 def get_auth_headers():
-    """Persist headers in session so the login prompts disappear after success."""
-    if "auth_headers" in st.session_state:
-        return st.session_state["auth_headers"]
+    """Persist headers and auth mode in session so the login prompts disappear after success."""
+    if "auth_headers" in st.session_state and "auth_mode" in st.session_state:
+        return st.session_state["auth_headers"], st.session_state["auth_mode"]
 
     # Prefer app-only auth when client secret is provided.
     headers = authenticate_app_only()
     if headers:
         st.success("Authenticated with app credentials (no prompt).")
+        auth_mode = "app"
     else:
         headers = authenticate_device_flow()
+        auth_mode = "delegated" if headers else None
+
     if headers:
         st.session_state["auth_headers"] = headers
-    return headers
+        st.session_state["auth_mode"] = auth_mode
+    return headers, auth_mode
 
-headers = get_auth_headers()
-if headers is None:
+headers, auth_mode = get_auth_headers()
+if headers is None or auth_mode is None:
     st.stop()
 
 with st.sidebar:
@@ -477,7 +487,15 @@ if fetch:
                     st.success(f"Loaded cached snapshot for {iso_year}-W{iso_week}.")
 
         if not cache_used:
-            events_df, stats = get_calendar_events(headers, start_date, end_date, include_all=False)
+            # For app-only auth you must target a specific mailbox.
+            target_user = None
+            if auth_mode == "app":
+                target_user = TARGET_MAILBOX
+                if not target_user:
+                    st.error("App-only auth requires TARGET_MAILBOX (UPN or user id) to fetch calendar data.")
+                    st.stop()
+
+            events_df, stats = get_calendar_events(headers, start_date, end_date, include_all=False, target_user=target_user)
 
             st.info(f"Graph returned {stats.get('total_events', 0)} events; matched {stats.get('matched_events', 0)} GO days.")
             summary_df, updated_events_df = summarize_vacation(events_df, start_date, end_date)
