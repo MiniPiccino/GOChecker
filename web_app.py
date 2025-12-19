@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta, timezone
-from azure.identity import DeviceCodeCredential
+from azure.identity import DeviceCodeCredential, ClientSecretCredential
 #from msgraph.core import GraphClient
 import requests
 import re
@@ -13,6 +13,7 @@ import holidays
 from dotenv import load_dotenv
 import os
 from datetime import date
+from pathlib import Path
 from collections import defaultdict
 
 #nest_asyncio.apply()
@@ -36,6 +37,7 @@ CLIENT_ID = _get_conf("CLIENT_ID")
 # For Graph calendar calls you usually want delegated scopes:
 # e.g. "User.Read Calendars.Read"
 SCOPE = _get_conf("SCOPE", "https://graph.microsoft.com/.default")
+CLIENT_SECRET = _get_conf("CLIENT_SECRET")
 
 DEVICE_CODE_URL = f"https://login.microsoftonline.com/{TENANT_ID or 'common'}/oauth2/v2.0/devicecode"
 TOKEN_URL = f"https://login.microsoftonline.com/{TENANT_ID or 'common'}/oauth2/v2.0/token"
@@ -102,6 +104,26 @@ def authenticate_device_flow():
     return headers
 
 
+def authenticate_app_only():
+    """Authenticate with client credentials (no user prompt) when CLIENT_SECRET is configured."""
+    if not (TENANT_ID and CLIENT_ID and CLIENT_SECRET):
+        return None
+    try:
+        credential = ClientSecretCredential(
+            tenant_id=TENANT_ID,
+            client_id=CLIENT_ID,
+            client_secret=CLIENT_SECRET,
+        )
+        token = credential.get_token(SCOPE)
+        return {
+            "Authorization": f"Bearer {token.token}",
+            "Accept": "application/json"
+        }
+    except Exception as exc:
+        st.warning(f"App-only auth failed, falling back to device code: {exc}")
+        return None
+
+
 hr_holidays = holidays.country_holidays("HR")
 def is_working_day(date):
     return date.weekday() < 5 and date not in hr_holidays
@@ -143,6 +165,89 @@ def load_carryover():
         except Exception:
             continue
     return carryover_map
+
+
+def get_week_key(end_date):
+    iso_year, iso_week, _ = end_date.isocalendar()
+    return iso_year, iso_week
+
+
+def snapshot_paths():
+    base = Path("snapshots")
+    return base, base / "summary_weekly.csv", base / "events_weekly.csv"
+
+
+def load_week_snapshot(end_date):
+    _, summary_path, events_path = snapshot_paths()
+    iso_year, iso_week = get_week_key(end_date)
+    if not summary_path.exists():
+        return None, None
+    try:
+        summary_df = pd.read_csv(summary_path)
+        week_summary = summary_df[(summary_df["Year"] == iso_year) & (summary_df["Week"] == iso_week)]
+        if week_summary.empty:
+            return None, None
+        events_df = pd.DataFrame()
+        if events_path.exists():
+            events_df = pd.read_csv(events_path)
+            events_df = events_df[(events_df["Year"] == iso_year) & (events_df["Week"] == iso_week)]
+        return week_summary.reset_index(drop=True), events_df.reset_index(drop=True)
+    except Exception as exc:
+        st.warning(f"Failed to load cached snapshot: {exc}")
+        return None, None
+
+
+def save_week_snapshot(start_date, end_date, summary_df, events_df):
+    base, summary_path, events_path = snapshot_paths()
+    base.mkdir(exist_ok=True)
+    iso_year, iso_week = get_week_key(end_date)
+    start_str = pd.to_datetime(start_date).date().isoformat()
+    end_str = pd.to_datetime(end_date).date().isoformat()
+    fetched_at = datetime.utcnow().isoformat()
+
+    def persist(path, df):
+        df_copy = df.copy()
+        df_copy["Year"] = iso_year
+        df_copy["Week"] = iso_week
+        df_copy["Period Start"] = start_str
+        df_copy["Period End"] = end_str
+        df_copy["Fetched At"] = fetched_at
+
+        if path.exists():
+            existing = pd.read_csv(path)
+            # Drop existing rows for the same week to avoid duplicates.
+            existing = existing[(existing["Year"] != iso_year) | (existing["Week"] != iso_week)]
+            combined = pd.concat([existing, df_copy], ignore_index=True)
+        else:
+            combined = df_copy
+
+        combined.to_csv(path, index=False)
+
+    persist(summary_path, summary_df)
+    persist(events_path, events_df)
+
+
+def snapshot_fetched_at(end_date):
+    _, summary_path, _ = snapshot_paths()
+    if not summary_path.exists():
+        return None
+    iso_year, iso_week = get_week_key(end_date)
+    try:
+        meta_df = pd.read_csv(summary_path, usecols=["Year", "Week", "Fetched At"])
+        row = meta_df[(meta_df["Year"] == iso_year) & (meta_df["Week"] == iso_week)]
+        if row.empty:
+            return None
+        return pd.to_datetime(row.iloc[0]["Fetched At"], errors="coerce")
+    except Exception:
+        return None
+
+
+def is_snapshot_stale(end_date, max_age_days=7):
+    fetched_at = snapshot_fetched_at(end_date)
+    if fetched_at is None or pd.isna(fetched_at):
+        return True
+    age = datetime.utcnow() - fetched_at.to_pydatetime()
+    return age > timedelta(days=max_age_days)
 
 def fetch_calendar_events(headers, start_datetime, end_datetime, include_all=False):
     start = datetime.combine(start_datetime, datetime.min.time()).astimezone(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
@@ -326,7 +431,13 @@ def get_auth_headers():
     """Persist headers in session so the login prompts disappear after success."""
     if "auth_headers" in st.session_state:
         return st.session_state["auth_headers"]
-    headers = authenticate_device_flow()
+
+    # Prefer app-only auth when client secret is provided.
+    headers = authenticate_app_only()
+    if headers:
+        st.success("Authenticated with app credentials (no prompt).")
+    else:
+        headers = authenticate_device_flow()
     if headers:
         st.session_state["auth_headers"] = headers
     return headers
@@ -341,21 +452,46 @@ with st.sidebar:
     end_date = st.date_input("End Date", datetime.now() + timedelta(days=30))
     debug_include_all = st.checkbox("Debug: include all events (ignore GO filter)", False)
     debug_show_sample = st.checkbox("Debug: show first 10 matched days", False)
+    use_cached_week = st.checkbox("Use cached weekly snapshot if available", True)
+    auto_refresh_stale = st.checkbox("Auto-refresh stale weekly snapshot", True)
     fetch = st.button("Fetch and Calculate")
 
 if fetch:
     with st.spinner("Fetching events and calculating..."):
-        events_df, stats = get_calendar_events(headers, start_date, end_date, include_all=debug_include_all)
+        iso_year, iso_week = get_week_key(end_date)
+        cache_used = False
+        summary_df = pd.DataFrame()
+        updated_events_df = pd.DataFrame()
+        events_df = None
 
-        st.info(f"Graph returned {stats.get('total_events', 0)} events; matched {stats.get('matched_events', 0)} GO days.")
-        if events_df.empty:
-            st.info("No events matched. Try enabling 'include all events' to inspect subjects/categories.")
-        else:
-            st.success(f"Found {len(events_df)} matching event days.")
-            if debug_show_sample:
-                st.dataframe(events_df[["Name", "Date", "Weekday", "Subject", "Categories"]].head(10))
+        if use_cached_week:
+            stale = is_snapshot_stale(end_date)
+            if stale and auto_refresh_stale:
+                st.info(f"Cached snapshot for {iso_year}-W{iso_week} is stale; refreshing.")
+            else:
+                cached_summary, cached_events = load_week_snapshot(end_date)
+                if cached_summary is not None:
+                    cache_used = True
+                    meta_cols = ["Year", "Week", "Period Start", "Period End", "Fetched At"]
+                    summary_df = cached_summary.drop(columns=meta_cols, errors="ignore")
+                    if cached_events is not None:
+                        updated_events_df = cached_events.drop(columns=meta_cols, errors="ignore")
+                    st.success(f"Loaded cached snapshot for {iso_year}-W{iso_week}.")
 
-        summary_df, updated_events_df = summarize_vacation(events_df, start_date, end_date)
+        if not cache_used:
+            events_df, stats = get_calendar_events(headers, start_date, end_date, include_all=debug_include_all)
+
+            st.info(f"Graph returned {stats.get('total_events', 0)} events; matched {stats.get('matched_events', 0)} GO days.")
+            if events_df.empty:
+                st.info("No events matched. Try enabling 'include all events' to inspect subjects/categories.")
+            else:
+                st.success(f"Found {len(events_df)} matching event days.")
+                if debug_show_sample:
+                    st.dataframe(events_df[["Name", "Date", "Weekday", "Subject", "Categories"]].head(10))
+
+            summary_df, updated_events_df = summarize_vacation(events_df, start_date, end_date)
+            save_week_snapshot(start_date, end_date, summary_df, updated_events_df)
+            st.caption(f"Snapshot saved for {iso_year}-W{iso_week}.")
 
         st.success("Done!")
         st.subheader("Vacation Summary")
