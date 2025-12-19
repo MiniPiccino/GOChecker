@@ -312,9 +312,19 @@ def fetch_calendar_events(headers, start_datetime, end_datetime, include_all=Fal
                     })
     # Ensure consistent columns even when no events match.
     matched_df = pd.DataFrame(vacation_rows, columns=["Name", "Date", "Weekday", "Subject", "Categories"])
+    sample_events = []
+    for ev in all_events[:5]:
+        sample_events.append({
+            "Subject": ev.get("subject", ""),
+            "Categories": ", ".join(ev.get("categories", [])) if ev.get("categories") else "",
+            "Start": ev.get("start", {}).get("dateTime", ""),
+            "End": ev.get("end", {}).get("dateTime", ""),
+        })
+
     stats = {
         "total_events": len(all_events),
-        "matched_events": len(vacation_rows)
+        "matched_events": len(vacation_rows),
+        "sample_events": sample_events
     }
     return matched_df, stats
 
@@ -498,6 +508,9 @@ if fetch:
             events_df, stats = get_calendar_events(headers, start_date, end_date, include_all=False, target_user=target_user)
 
             st.info(f"Graph returned {stats.get('total_events', 0)} events; matched {stats.get('matched_events', 0)} GO days.")
+            if stats.get("matched_events", 0) == 0 and stats.get("total_events", 0) > 0:
+                st.caption("First few returned events (subjects/categories) to diagnose GO matching:")
+                st.dataframe(pd.DataFrame(stats.get("sample_events", [])))
             summary_df, updated_events_df = summarize_vacation(events_df, start_date, end_date)
             save_week_snapshot(start_date, end_date, summary_df, updated_events_df)
             st.caption(f"Snapshot saved for {iso_year}-W{iso_week}.")
