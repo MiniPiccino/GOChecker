@@ -15,6 +15,7 @@ import os
 from datetime import date
 from pathlib import Path
 from urllib.parse import quote
+import msal
 from collections import defaultdict
 
 #nest_asyncio.apply()
@@ -40,6 +41,9 @@ CLIENT_ID = _get_conf("CLIENT_ID")
 SCOPE = _get_conf("SCOPE", "https://graph.microsoft.com/.default")
 CLIENT_SECRET = _get_conf("CLIENT_SECRET")
 TARGET_MAILBOX = _get_conf("TARGET_MAILBOX") or _get_conf("TARGET_USER") or _get_conf("USER_UPN")
+AUTH_MODE = (_get_conf("AUTH_MODE", "delegated") or "delegated").lower()
+DELEGATED_SCOPES = (_get_conf("DELEGATED_SCOPES", "User.Read Calendars.Read") or "").split()
+MSAL_CACHE_PATH = _get_conf("MSAL_CACHE_PATH", ".msal_cache.bin")
 
 DEVICE_CODE_URL = f"https://login.microsoftonline.com/{TENANT_ID or 'common'}/oauth2/v2.0/devicecode"
 TOKEN_URL = f"https://login.microsoftonline.com/{TENANT_ID or 'common'}/oauth2/v2.0/token"
@@ -104,6 +108,57 @@ def authenticate_device_flow():
     }
     st.success("✅ Authentication successful.")
     return headers
+
+
+def _load_msal_cache():
+    cache = msal.SerializableTokenCache()
+    cache_path = Path(MSAL_CACHE_PATH)
+    if cache_path.exists():
+        cache.deserialize(cache_path.read_text())
+    return cache, cache_path
+
+
+def _save_msal_cache(cache, cache_path):
+    if cache.has_state_changed:
+        cache_path.write_text(cache.serialize())
+
+
+def authenticate_with_msal(silent_only=False):
+    if not (TENANT_ID and CLIENT_ID):
+        st.error("Missing TENANT_ID or CLIENT_ID for delegated auth.")
+        return None
+
+    authority = f"https://login.microsoftonline.com/{TENANT_ID}"
+    scopes = DELEGATED_SCOPES or ["User.Read", "Calendars.Read"]
+    cache, cache_path = _load_msal_cache()
+    app = msal.PublicClientApplication(CLIENT_ID, authority=authority, token_cache=cache)
+
+    result = None
+    accounts = app.get_accounts()
+    if accounts:
+        result = app.acquire_token_silent(scopes, account=accounts[0])
+
+    if not result and not silent_only:
+        flow = app.initiate_device_flow(scopes=scopes)
+        if "user_code" not in flow:
+            st.error("Failed to start device code flow.")
+            return None
+        st.info("Microsoft Login Required")
+        st.markdown(f"[Click here to log in]({flow['verification_uri']})", unsafe_allow_html=True)
+        st.code(f"Enter this code: {flow['user_code']}", language="text")
+        result = app.acquire_token_by_device_flow(flow)
+
+    _save_msal_cache(cache, cache_path)
+
+    if result and "access_token" in result:
+        return {
+            "Authorization": f"Bearer {result['access_token']}",
+            "Accept": "application/json",
+        }
+
+    if result and "error" in result and not silent_only:
+        st.error(f"Authentication failed: {result.get('error_description', result['error'])}")
+    return None
 
 
 def authenticate_app_only():
@@ -197,6 +252,46 @@ def load_week_snapshot(end_date):
     except Exception as exc:
         st.warning(f"Failed to load cached snapshot: {exc}")
         return None, None
+
+
+def load_range_snapshot(start_date, end_date):
+    _, summary_path, events_path = snapshot_paths()
+    if not summary_path.exists():
+        return None, None
+
+    try:
+        summary_df = pd.read_csv(summary_path)
+    except Exception as exc:
+        st.warning(f"Failed to load cached summary snapshot: {exc}")
+        summary_df = None
+
+    if summary_df is not None and ("Period Start" not in summary_df.columns or "Period End" not in summary_df.columns):
+        summary_df = None
+
+    start_date = pd.to_datetime(start_date).date()
+    end_date = pd.to_datetime(end_date).date()
+
+    in_range = pd.DataFrame()
+    if summary_df is not None:
+        summary_df["Period Start"] = pd.to_datetime(summary_df["Period Start"], errors="coerce").dt.date
+        summary_df["Period End"] = pd.to_datetime(summary_df["Period End"], errors="coerce").dt.date
+        in_range = summary_df[
+            (summary_df["Period End"] >= start_date) & (summary_df["Period Start"] <= end_date)
+        ].copy()
+
+    # Load and filter events within date range.
+    events_df = pd.DataFrame()
+    if events_path.exists():
+        try:
+            events_df = pd.read_csv(events_path)
+            if "Date" in events_df.columns:
+                events_df["Date"] = pd.to_datetime(events_df["Date"], errors="coerce").dt.date
+                events_df = events_df[(events_df["Date"] >= start_date) & (events_df["Date"] <= end_date)]
+        except Exception as exc:
+            st.warning(f"Failed to load cached events snapshot: {exc}")
+
+    summary_agg = in_range.reset_index(drop=True) if not in_range.empty else None
+    return summary_agg, events_df.reset_index(drop=True)
 
 
 def save_week_snapshot(start_date, end_date, summary_df, events_df):
@@ -425,12 +520,24 @@ def summarize_vacation(events_df, start_date, end_date):
             carryover_status = "No carryover recorded"
             carryover_usable = "No"
 
+        used_in_year = usage_by_year.get(target_year, 0)
+        used_pre_june = int(((group["Year"] == target_year) & (group["Date"] <= carryover_expiry)).sum()) if not group.empty else 0
+        carryover_used = min(carryover_days, used_pre_june)
+        carryover_remaining = max(carryover_days - carryover_used, 0)
+        base_used = max(used_in_year - carryover_used, 0)
+        base_remaining = max(base_allowance - base_used, 0)
+        remaining_total = base_remaining + (carryover_remaining if carryover_usable == "Yes" else 0)
+
         summary = {
             "Name": name,
             "Base Allowance": base_allowance,
             f"Carryover from {carryover_year}": carryover_days,
             "Carryover Status": carryover_status,
             "Carryover Usable?": carryover_usable,
+            "Carryover Used": carryover_used,
+            "Carryover Remaining": carryover_remaining,
+            "Base Remaining": base_remaining,
+            "Remaining Total": remaining_total,
             f"Used {target_year}": usage_by_year.get(target_year, 0),
             "Used Total": used_total,
             "⚠️ Over Base Limit?": "Yes" if over_base else "No"
@@ -438,7 +545,6 @@ def summarize_vacation(events_df, start_date, end_date):
 
         for y in sorted(usage_by_year.keys()):
             summary[f"Used {y}"] = usage_by_year[y]
-            summary[f"Remaining {y} (base only)"] = max(base_allowance - usage_by_year[y], 0)
 
         summary_rows.append(summary)
         enriched_rows.append(group)
@@ -460,13 +566,16 @@ def get_auth_headers():
     if "auth_headers" in st.session_state and "auth_mode" in st.session_state:
         return st.session_state["auth_headers"], st.session_state["auth_mode"]
 
-    # Prefer app-only auth when client secret is provided.
-    headers = authenticate_app_only()
-    if headers:
-        st.success("Authenticated with app credentials (no prompt).")
-        auth_mode = "app"
+    if AUTH_MODE == "app":
+        headers = authenticate_app_only()
+        if headers:
+            st.success("Authenticated with app credentials (no prompt).")
+            auth_mode = "app"
+        else:
+            headers = authenticate_with_msal(silent_only=False)
+            auth_mode = "delegated" if headers else None
     else:
-        headers = authenticate_device_flow()
+        headers = authenticate_with_msal(silent_only=False)
         auth_mode = "delegated" if headers else None
 
     if headers:
@@ -482,29 +591,56 @@ with st.sidebar:
     st.header("Filter Settings")
     start_date = st.date_input("Start Date", datetime.now() - timedelta(days=30))
     end_date = st.date_input("End Date", datetime.now() + timedelta(days=30))
+    use_cached_week = st.checkbox("Use cached weekly snapshot if available", True)
+    auto_refresh_stale = st.checkbox("Auto-refresh stale weekly snapshot", True)
     fetch = st.button("Fetch and Calculate")
 
 if fetch:
     with st.spinner("Fetching events and calculating..."):
-        # For app-only auth you must target a specific mailbox.
-        target_user = None
-        if auth_mode == "app":
-            target_user = TARGET_MAILBOX
-            if not target_user:
-                st.error("App-only auth requires TARGET_MAILBOX (UPN or user id) to fetch calendar data.")
+        iso_year, iso_week = get_week_key(end_date)
+        cache_used = False
+        summary_df = pd.DataFrame()
+        updated_events_df = pd.DataFrame()
+
+        if use_cached_week:
+            stale = is_snapshot_stale(end_date)
+            if stale and auto_refresh_stale:
+                st.info(f"Cached snapshot for {iso_year}-W{iso_week} is stale; refreshing.")
+            else:
+                cached_summary, cached_events = load_range_snapshot(start_date, end_date)
+                if cached_events is not None and not cached_events.empty:
+                    summary_df, updated_events_df = summarize_vacation(cached_events, start_date, end_date)
+                    cache_used = True
+                    st.success("Loaded cached events for selected date range.")
+                elif cached_summary is not None:
+                    cache_used = True
+                    summary_df = cached_summary.drop(columns=[c for c in cached_summary.columns if c.startswith("Remaining ")], errors="ignore")
+                    if cached_events is not None:
+                        updated_events_df = cached_events
+                    st.success("Loaded cached snapshot for selected date range.")
+
+        if not cache_used:
+            # For app-only auth you must target a specific mailbox.
+            target_user = None
+            if auth_mode == "app":
+                target_user = TARGET_MAILBOX
+                if not target_user:
+                    st.error("App-only auth requires TARGET_MAILBOX (UPN or user id) to fetch calendar data.")
+                    st.stop()
+
+            events_df, stats = get_calendar_events(headers, start_date, end_date, include_all=False, target_user=target_user)
+
+            if stats.get("error"):
+                st.error("Calendar fetch failed.")
                 st.stop()
 
-        events_df, stats = get_calendar_events(headers, start_date, end_date, include_all=False, target_user=target_user)
-
-        if stats.get("error"):
-            st.error("Calendar fetch failed.")
-            st.stop()
-
-        st.info(f"Graph returned {stats.get('total_events', 0)} events; matched {stats.get('matched_events', 0)} GO days.")
-        if stats.get("matched_events", 0) == 0 and stats.get("total_events", 0) > 0:
-            st.caption("First few returned events (subjects/categories) to diagnose GO matching:")
-            st.dataframe(pd.DataFrame(stats.get("sample_events", [])))
-        summary_df, updated_events_df = summarize_vacation(events_df, start_date, end_date)
+            st.info(f"Graph returned {stats.get('total_events', 0)} events; matched {stats.get('matched_events', 0)} GO days.")
+            if stats.get("matched_events", 0) == 0 and stats.get("total_events", 0) > 0:
+                st.caption("First few returned events (subjects/categories) to diagnose GO matching:")
+                st.dataframe(pd.DataFrame(stats.get("sample_events", [])))
+            summary_df, updated_events_df = summarize_vacation(events_df, start_date, end_date)
+            save_week_snapshot(start_date, end_date, summary_df, updated_events_df)
+            st.caption(f"Snapshot saved for {iso_year}-W{iso_week}.")
 
         st.success("Done!")
         st.subheader("Vacation Summary")

@@ -1,3 +1,4 @@
 .config.cfg
 .env
 fetch_weekly_snapshot.bat
+.msal_cache.bin

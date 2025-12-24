@@ -6,7 +6,7 @@ import pandas as pd
 
 # Reuse logic from the main app.
 from web_app import (
-    authenticate_app_only,
+    authenticate_with_msal,
     fetch_calendar_events,
     summarize_vacation,
     save_week_snapshot,
@@ -25,18 +25,10 @@ def last_iso_week_of_year(iso_year: int) -> int:
     return date(iso_year, 12, 28).isocalendar().week
 
 
-def run_backfill(year: int, through_today: bool = True, target_user: str | None = None):
-    if not target_user:
-        from web_app import TARGET_MAILBOX
-
-        target_user = TARGET_MAILBOX
-
-    headers = authenticate_app_only()
+def run_backfill(year: int, through_today: bool = True, interactive: bool = False):
+    headers = authenticate_with_msal(silent_only=not interactive)
     if not headers:
-        print("ERROR: App-only authentication failed. Ensure TENANT_ID, CLIENT_ID, CLIENT_SECRET, and SCOPE are set.")
-        sys.exit(1)
-    if not target_user:
-        print("ERROR: TARGET_MAILBOX (or --target-user) is required for app-only calendar access.")
+        print("ERROR: Delegated authentication failed. Run with --interactive once to seed the token cache.")
         sys.exit(1)
 
     max_week = last_iso_week_of_year(year)
@@ -47,7 +39,7 @@ def run_backfill(year: int, through_today: bool = True, target_user: str | None 
     for week in range(1, max_week + 1):
         start_date, end_date = week_bounds(year, week)
         print(f"Fetching ISO week {year}-W{week:02d} ({start_date} to {end_date})...")
-        events_df, stats = fetch_calendar_events(headers, start_date, end_date, include_all=False, target_user=target_user)
+        events_df, stats = fetch_calendar_events(headers, start_date, end_date, include_all=False, target_user=None)
         if stats.get("error"):
             print(f"  ERROR: {stats['error']}")
             print("  Skipping snapshot due to fetch error.")
@@ -70,13 +62,13 @@ def main():
         help="Stop at the current week if the year is the current year (default: backfill entire year).",
     )
     parser.add_argument(
-        "--target-user",
-        type=str,
-        default=None,
-        help="Mailbox UPN to read (defaults to TARGET_MAILBOX/TARGET_USER/USER_UPN env vars).",
+        "--interactive",
+        action="store_true",
+        default=False,
+        help="Allow device-code login if no cached token is available.",
     )
     args = parser.parse_args()
-    run_backfill(args.year, through_today=args.through_today, target_user=args.target_user)
+    run_backfill(args.year, through_today=args.through_today, interactive=args.interactive)
 
 
 if __name__ == "__main__":
