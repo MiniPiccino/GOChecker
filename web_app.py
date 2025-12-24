@@ -287,6 +287,8 @@ def load_range_snapshot(start_date, end_date):
             if "Date" in events_df.columns:
                 events_df["Date"] = pd.to_datetime(events_df["Date"], errors="coerce").dt.date
                 events_df = events_df[(events_df["Date"] >= start_date) & (events_df["Date"] <= end_date)]
+                if "Name" in events_df.columns:
+                    events_df = events_df.drop_duplicates(subset=["Name", "Date"])
         except Exception as exc:
             st.warning(f"Failed to load cached events snapshot: {exc}")
 
@@ -418,6 +420,9 @@ def fetch_calendar_events(headers, start_datetime, end_datetime, include_all=Fal
         return None, stats
 
     matched_df = pd.DataFrame(vacation_rows, columns=["Name", "Date", "Weekday", "Subject", "Categories"])
+    if not matched_df.empty:
+        # Count at most one vacation day per person per date.
+        matched_df = matched_df.drop_duplicates(subset=["Name", "Date"])
     sample_events = []
     for ev in all_events[:5]:
         sample_events.append({
@@ -429,7 +434,7 @@ def fetch_calendar_events(headers, start_datetime, end_datetime, include_all=Fal
 
     stats = {
         "total_events": len(all_events),
-        "matched_events": len(vacation_rows),
+        "matched_events": len(matched_df),
         "sample_events": sample_events,
         "error": None,
     }
