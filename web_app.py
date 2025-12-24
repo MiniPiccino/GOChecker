@@ -482,54 +482,29 @@ with st.sidebar:
     st.header("Filter Settings")
     start_date = st.date_input("Start Date", datetime.now() - timedelta(days=30))
     end_date = st.date_input("End Date", datetime.now() + timedelta(days=30))
-    use_cached_week = st.checkbox("Use cached weekly snapshot if available", True)
-    auto_refresh_stale = st.checkbox("Auto-refresh stale weekly snapshot", True)
     fetch = st.button("Fetch and Calculate")
 
 if fetch:
     with st.spinner("Fetching events and calculating..."):
-        iso_year, iso_week = get_week_key(end_date)
-        cache_used = False
-        summary_df = pd.DataFrame()
-        updated_events_df = pd.DataFrame()
-        events_df = None
-
-        if use_cached_week:
-            stale = is_snapshot_stale(end_date)
-            if stale and auto_refresh_stale:
-                st.info(f"Cached snapshot for {iso_year}-W{iso_week} is stale; refreshing.")
-            else:
-                cached_summary, cached_events = load_week_snapshot(end_date)
-                if cached_summary is not None:
-                    cache_used = True
-                    meta_cols = ["Year", "Week", "Period Start", "Period End", "Fetched At"]
-                    summary_df = cached_summary.drop(columns=meta_cols, errors="ignore")
-                    if cached_events is not None:
-                        updated_events_df = cached_events.drop(columns=meta_cols, errors="ignore")
-                    st.success(f"Loaded cached snapshot for {iso_year}-W{iso_week}.")
-
-        if not cache_used:
-            # For app-only auth you must target a specific mailbox.
-            target_user = None
-            if auth_mode == "app":
-                target_user = TARGET_MAILBOX
-                if not target_user:
-                    st.error("App-only auth requires TARGET_MAILBOX (UPN or user id) to fetch calendar data.")
-                    st.stop()
-
-            events_df, stats = get_calendar_events(headers, start_date, end_date, include_all=False, target_user=target_user)
-
-            if stats.get("error"):
-                st.error("Calendar fetch failed; snapshot not saved.")
+        # For app-only auth you must target a specific mailbox.
+        target_user = None
+        if auth_mode == "app":
+            target_user = TARGET_MAILBOX
+            if not target_user:
+                st.error("App-only auth requires TARGET_MAILBOX (UPN or user id) to fetch calendar data.")
                 st.stop()
 
-            st.info(f"Graph returned {stats.get('total_events', 0)} events; matched {stats.get('matched_events', 0)} GO days.")
-            if stats.get("matched_events", 0) == 0 and stats.get("total_events", 0) > 0:
-                st.caption("First few returned events (subjects/categories) to diagnose GO matching:")
-                st.dataframe(pd.DataFrame(stats.get("sample_events", [])))
-            summary_df, updated_events_df = summarize_vacation(events_df, start_date, end_date)
-            save_week_snapshot(start_date, end_date, summary_df, updated_events_df)
-            st.caption(f"Snapshot saved for {iso_year}-W{iso_week}.")
+        events_df, stats = get_calendar_events(headers, start_date, end_date, include_all=False, target_user=target_user)
+
+        if stats.get("error"):
+            st.error("Calendar fetch failed.")
+            st.stop()
+
+        st.info(f"Graph returned {stats.get('total_events', 0)} events; matched {stats.get('matched_events', 0)} GO days.")
+        if stats.get("matched_events", 0) == 0 and stats.get("total_events", 0) > 0:
+            st.caption("First few returned events (subjects/categories) to diagnose GO matching:")
+            st.dataframe(pd.DataFrame(stats.get("sample_events", [])))
+        summary_df, updated_events_df = summarize_vacation(events_df, start_date, end_date)
 
         st.success("Done!")
         st.subheader("Vacation Summary")
