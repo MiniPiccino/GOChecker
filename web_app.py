@@ -262,10 +262,12 @@ def fetch_calendar_events(headers, start_datetime, end_datetime, include_all=Fal
         url = f"https://graph.microsoft.com/v1.0/me/calendar/calendarView?startDateTime={start}&endDateTime={end}"
     all_events = []
 
+    error_msg = None
     while url:
         response = requests.get(url, headers=headers)
         if response.status_code != 200:
-            st.error(f"Graph API error {response.status_code}: {response.text}")
+            error_msg = f"Graph API error {response.status_code}: {response.text}"
+            st.error(error_msg)
             break
 
         result = response.json()
@@ -311,6 +313,15 @@ def fetch_calendar_events(headers, start_datetime, end_datetime, include_all=Fal
                         "Categories": ", ".join(categories) if categories else ""
                     })
     # Ensure consistent columns even when no events match.
+    if error_msg:
+        stats = {
+            "total_events": len(all_events),
+            "matched_events": 0,
+            "sample_events": [],
+            "error": error_msg,
+        }
+        return None, stats
+
     matched_df = pd.DataFrame(vacation_rows, columns=["Name", "Date", "Weekday", "Subject", "Categories"])
     sample_events = []
     for ev in all_events[:5]:
@@ -324,7 +335,8 @@ def fetch_calendar_events(headers, start_datetime, end_datetime, include_all=Fal
     stats = {
         "total_events": len(all_events),
         "matched_events": len(vacation_rows),
-        "sample_events": sample_events
+        "sample_events": sample_events,
+        "error": None,
     }
     return matched_df, stats
 
@@ -335,7 +347,7 @@ def fetch_calendar_events(headers, start_datetime, end_datetime, include_all=Fal
 def get_calendar_events(graph_client, start_datetime, end_datetime, include_all=False, target_user=None):
     df, stats = fetch_calendar_events(graph_client, start_datetime, end_datetime, include_all=include_all, target_user=target_user)
     if df is None:
-        return pd.DataFrame(columns=["Name", "Date", "Weekday", "Subject", "Categories"]), {"total_events": 0, "matched_events": 0}
+        return pd.DataFrame(columns=["Name", "Date", "Weekday", "Subject", "Categories"]), stats or {"total_events": 0, "matched_events": 0, "error": "Unknown error"}
     return df, stats
 
 
@@ -506,6 +518,10 @@ if fetch:
                     st.stop()
 
             events_df, stats = get_calendar_events(headers, start_date, end_date, include_all=False, target_user=target_user)
+
+            if stats.get("error"):
+                st.error("Calendar fetch failed; snapshot not saved.")
+                st.stop()
 
             st.info(f"Graph returned {stats.get('total_events', 0)} events; matched {stats.get('matched_events', 0)} GO days.")
             if stats.get("matched_events", 0) == 0 and stats.get("total_events", 0) > 0:

@@ -48,6 +48,10 @@ def run_backfill(year: int, through_today: bool = True, target_user: str | None 
         start_date, end_date = week_bounds(year, week)
         print(f"Fetching ISO week {year}-W{week:02d} ({start_date} to {end_date})...")
         events_df, stats = fetch_calendar_events(headers, start_date, end_date, include_all=False, target_user=target_user)
+        if stats.get("error"):
+            print(f"  ERROR: {stats['error']}")
+            print("  Skipping snapshot due to fetch error.")
+            continue
         print(f"  Graph returned {stats.get('total_events', 0)} events; matched {stats.get('matched_events', 0)} GO days.")
         summary_df, updated_events_df = summarize_vacation(events_df, start_date, end_date)
         save_week_snapshot(start_date, end_date, summary_df, updated_events_df)
