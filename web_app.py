@@ -17,6 +17,7 @@ from pathlib import Path
 from urllib.parse import quote
 import msal
 from collections import defaultdict
+import calendar
 
 #nest_asyncio.apply()
 load_dotenv() 
@@ -560,6 +561,40 @@ def summarize_vacation(events_df, start_date, end_date):
     return summary_df, updated_events_df
 
 
+def build_vacation_calendar(events_df, month_date):
+    if events_df is None or events_df.empty:
+        return pd.DataFrame()
+
+    month_date = pd.to_datetime(month_date).date()
+    year = month_date.year
+    month = month_date.month
+    events_df = events_df.copy()
+    events_df["Date"] = pd.to_datetime(events_df["Date"]).dt.date
+    month_events = events_df[(events_df["Date"] >= date(year, month, 1)) & (events_df["Date"] <= date(year, month, calendar.monthrange(year, month)[1]))]
+
+    day_to_names = (
+        month_events.groupby("Date")["Name"]
+        .apply(lambda s: ", ".join(sorted(set(n for n in s if isinstance(n, str)))))
+        .to_dict()
+    )
+
+    cal = calendar.Calendar(firstweekday=0)
+    weeks = cal.monthdatescalendar(year, month)
+    rows = []
+    for week in weeks:
+        row = []
+        for d in week:
+            if d.month != month:
+                row.append("")
+                continue
+            names = day_to_names.get(d, "")
+            cell = f"{d.day}\n{names}" if names else str(d.day)
+            row.append(cell)
+        rows.append(row)
+
+    return pd.DataFrame(rows, columns=["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"])
+
+
 # --- Streamlit UI ---
 st.title("Vacation Tracker - GO Events Summary")
 
@@ -650,6 +685,19 @@ if fetch:
         st.success("Done!")
         st.subheader("Vacation Summary")
         st.dataframe(summary_df)  # ✅ Only display the summary
+
+        st.subheader("Testing Zone")
+        calendar_month = st.date_input("Calendar Month", end_date, key="calendar_month")
+        calendar_df = build_vacation_calendar(updated_events_df, calendar_month)
+        if calendar_df.empty:
+            st.info("No vacations to display in the calendar for the selected month.")
+        else:
+            st.table(calendar_df)
+
+        display_cols = [c for c in ["Date", "Name", "Weekday", "Subject", "Used Status", "Carryover Window"] if c in updated_events_df.columns]
+        if display_cols:
+            st.caption("Selected vacations in the current date range")
+            st.dataframe(updated_events_df.sort_values(["Date", "Name"])[display_cols], use_container_width=True)
 
         # ✅ Export both to Excel
         buffer = io.BytesIO()
