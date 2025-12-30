@@ -378,8 +378,8 @@ def fetch_calendar_events(headers, start_datetime, end_datetime, include_all=Fal
     def is_go_event(subject, categories):
         subject = subject or ""
         categories = categories or []
-        # Match GO/go/g.o/g-o and TBC variants with flexible spacing/punctuation.
-        go_pattern = r'(?i)\bg[\s\.\-]*o\b(?:\s*[\-:]*\s*\(?tbc\)?)?'
+        # Match GO/go/g.o/g-o and punctuation/spacing variants, plus optional TBC suffix.
+        go_pattern = r'(?i)\bg[\s\.\-_/]*o\b[!?.]?(?:\s*[\-:]*\s*\(?tbc\)?)?'
         subject_match = bool(re.search(go_pattern, subject))
         category_match = any(cat.lower() == "go" for cat in categories if isinstance(cat, str))
         return subject_match or category_match
