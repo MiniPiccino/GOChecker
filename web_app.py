@@ -181,7 +181,7 @@ def authenticate_app_only():
         return None
 
 
-hr_holidays = holidays.country_holidays("HR")
+hr_holidays = holidays.country_holidays("HR", years=2026)
 def is_working_day(date):
     return date.weekday() < 5 and date not in hr_holidays
 
