@@ -595,6 +595,57 @@ def build_vacation_calendar(events_df, month_date):
     return pd.DataFrame(rows, columns=["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"])
 
 
+def build_vacation_calendar_html(events_df, month_date):
+    if events_df is None or events_df.empty:
+        return ""
+
+    month_date = pd.to_datetime(month_date).date()
+    year = month_date.year
+    month = month_date.month
+    events_df = events_df.copy()
+    events_df["Date"] = pd.to_datetime(events_df["Date"]).dt.date
+    month_events = events_df[(events_df["Date"] >= date(year, month, 1)) & (events_df["Date"] <= date(year, month, calendar.monthrange(year, month)[1]))]
+
+    day_to_names = (
+        month_events.groupby("Date")["Name"]
+        .apply(lambda s: ", ".join(sorted(set(n for n in s if isinstance(n, str)))))
+        .to_dict()
+    )
+
+    cal = calendar.Calendar(firstweekday=0)
+    weeks = cal.monthdatescalendar(year, month)
+    month_label = month_date.strftime("%B %Y")
+
+    def cell_html(d):
+        if d.month != month:
+            return '<td class="day muted"></td>'
+        names = day_to_names.get(d, "")
+        names_html = f'<div class="names">{names}</div>' if names else ""
+        has_vac = " has-vac" if names else ""
+        return f'<td class="day{has_vac}"><div class="date">{d.day}</div>{names_html}</td>'
+
+    rows_html = "\n".join(
+        "<tr>" + "".join(cell_html(d) for d in week) + "</tr>"
+        for week in weeks
+    )
+
+    return f"""
+    <div class="vacation-calendar">
+      <div class="calendar-header">{month_label}</div>
+      <table>
+        <thead>
+          <tr>
+            <th>Mon</th><th>Tue</th><th>Wed</th><th>Thu</th><th>Fri</th><th>Sat</th><th>Sun</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows_html}
+        </tbody>
+      </table>
+    </div>
+    """
+
+
 # --- Streamlit UI ---
 st.title("Vacation Tracker - GO Events Summary")
 
@@ -688,11 +739,27 @@ if fetch:
 
         st.subheader("Testing Zone")
         calendar_month = st.date_input("Calendar Month", end_date, key="calendar_month")
-        calendar_df = build_vacation_calendar(updated_events_df, calendar_month)
-        if calendar_df.empty:
+        calendar_html = build_vacation_calendar_html(updated_events_df, calendar_month)
+        if not calendar_html:
             st.info("No vacations to display in the calendar for the selected month.")
         else:
-            st.table(calendar_df)
+            st.markdown(
+                """
+                <style>
+                .vacation-calendar { font-family: "Trebuchet MS", "Segoe UI", sans-serif; }
+                .vacation-calendar .calendar-header { font-size: 1.2rem; font-weight: 700; margin-bottom: 0.5rem; }
+                .vacation-calendar table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+                .vacation-calendar th { text-align: left; font-size: 0.85rem; padding: 0.4rem; color: #333; border-bottom: 1px solid #ddd; }
+                .vacation-calendar td { vertical-align: top; padding: 0.4rem; border: 1px solid #eee; height: 90px; background: #fafafa; }
+                .vacation-calendar td.has-vac { background: #fff4d6; border-color: #f2d08b; }
+                .vacation-calendar td.muted { background: #f5f5f5; color: #999; }
+                .vacation-calendar .date { font-weight: 700; margin-bottom: 0.25rem; }
+                .vacation-calendar .names { font-size: 0.78rem; line-height: 1.2; color: #333; }
+                </style>
+                """,
+                unsafe_allow_html=True,
+            )
+            st.markdown(calendar_html, unsafe_allow_html=True)
 
         display_cols = [c for c in ["Date", "Name", "Weekday", "Subject", "Used Status", "Carryover Window"] if c in updated_events_df.columns]
         if display_cols:
