@@ -536,21 +536,21 @@ def summarize_vacation(events_df, start_date, end_date):
 
         summary = {
             "Name": name,
-            "Base Allowance": base_allowance,
+            #"Base Allowance": base_allowance,
             f"Carryover from {carryover_year}": carryover_days,
-            "Carryover Status": carryover_status,
-            "Carryover Usable?": carryover_usable,
-            "Carryover Used": carryover_used,
+            #"Carryover Status": carryover_status,
+            #"Carryover Usable?": carryover_usable,
+            #"Carryover Used": carryover_used,
             "Carryover Remaining": carryover_remaining,
-            "Base Remaining": base_remaining,
+            #"Base Remaining": base_remaining,
             "Remaining Total": remaining_total,
-            f"Used {target_year}": usage_by_year.get(target_year, 0),
+            #f"Used {target_year}": usage_by_year.get(target_year, 0),
             "Used Total": used_total,
-            "⚠️ Over Base Limit?": "Yes" if over_base else "No"
+            #"Over Base Limit?": "Yes" if over_base else "No"
         }
 
-        for y in sorted(usage_by_year.keys()):
-            summary[f"Used {y}"] = usage_by_year[y]
+        #for y in sorted(usage_by_year.keys()):
+        #    summary[f"Used {y}"] = usage_by_year[y]
 
         summary_rows.append(summary)
         enriched_rows.append(group)
