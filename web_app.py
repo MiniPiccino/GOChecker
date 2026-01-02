@@ -544,8 +544,8 @@ def summarize_vacation(events_df, start_date, end_date):
             "Carryover Remaining": carryover_remaining,
             #"Base Remaining": base_remaining,
             "Remaining Total": remaining_total,
-            #f"Used {target_year}": usage_by_year.get(target_year, 0),
-            "Used Total": used_total,
+            f"Used {target_year}": usage_by_year.get(target_year, 0),
+            #"Used Total": used_total,
             #"Over Base Limit?": "Yes" if over_base else "No"
         }
 
