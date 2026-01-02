@@ -230,18 +230,48 @@ def get_week_key(end_date):
     return iso_year, iso_week
 
 
-def snapshot_paths():
+def snapshot_paths(snapshot_year):
     base = Path("snapshots")
-    return base, base / "summary_weekly.csv", base / "events_weekly.csv"
+    return base, base / f"summary_{snapshot_year}.csv", base / f"events_{snapshot_year}.csv"
 
 
-def snapshot_latest_paths():
+def snapshot_latest_paths(snapshot_year):
     base = Path("snapshots")
-    return base, base / "summary_weekly_latest.csv", base / "events_weekly_latest.csv"
+    return base, base / f"summary_latest_{snapshot_year}.csv", base / f"events_latest_{snapshot_year}.csv"
+
+
+def latest_snapshot_period_end(snapshot_year):
+    _, summary_path, _ = snapshot_latest_paths(snapshot_year)
+    if not summary_path.exists():
+        return None
+    try:
+        df = pd.read_csv(summary_path, usecols=["Period End"])
+        if df.empty:
+            return None
+        df["Period End"] = pd.to_datetime(df["Period End"], errors="coerce").dt.date
+        max_end = df["Period End"].max()
+        return max_end if pd.notna(max_end) else None
+    except Exception:
+        return None
+
+
+def latest_snapshot_fetched_at(snapshot_year):
+    _, summary_path, _ = snapshot_latest_paths(snapshot_year)
+    if not summary_path.exists():
+        return None
+    try:
+        df = pd.read_csv(summary_path, usecols=["Fetched At"])
+        if df.empty:
+            return None
+        ts = pd.to_datetime(df["Fetched At"], errors="coerce").max()
+        return ts if pd.notna(ts) else None
+    except Exception:
+        return None
 
 
 def load_latest_snapshot(start_date, end_date):
-    _, summary_path, events_path = snapshot_latest_paths()
+    snapshot_year = pd.to_datetime(end_date).date().year
+    _, summary_path, events_path = snapshot_latest_paths(snapshot_year)
     if not summary_path.exists():
         return None, None
 
@@ -282,7 +312,8 @@ def load_latest_snapshot(start_date, end_date):
 
 
 def load_week_snapshot(end_date):
-    _, summary_path, events_path = snapshot_paths()
+    snapshot_year = pd.to_datetime(end_date).date().year
+    _, summary_path, events_path = snapshot_paths(snapshot_year)
     iso_year, iso_week = get_week_key(end_date)
     if not summary_path.exists():
         return None, None
@@ -306,7 +337,8 @@ def load_range_snapshot(start_date, end_date):
     if latest_summary is not None:
         return latest_summary, latest_events
 
-    _, summary_path, events_path = snapshot_paths()
+    snapshot_year = pd.to_datetime(end_date).date().year
+    _, summary_path, events_path = snapshot_paths(snapshot_year)
     if not summary_path.exists():
         return None, None
 
@@ -348,8 +380,9 @@ def load_range_snapshot(start_date, end_date):
 
 
 def save_week_snapshot(start_date, end_date, summary_df, events_df):
-    base, summary_path, events_path = snapshot_paths()
-    _, latest_summary_path, latest_events_path = snapshot_latest_paths()
+    snapshot_year = pd.to_datetime(end_date).date().year
+    base, summary_path, events_path = snapshot_paths(snapshot_year)
+    _, latest_summary_path, latest_events_path = snapshot_latest_paths(snapshot_year)
     base.mkdir(exist_ok=True)
     iso_year, iso_week = get_week_key(end_date)
     start_str = pd.to_datetime(start_date).date().isoformat()
@@ -391,7 +424,8 @@ def save_week_snapshot(start_date, end_date, summary_df, events_df):
 
 
 def snapshot_fetched_at(end_date):
-    _, summary_path, _ = snapshot_paths()
+    snapshot_year = pd.to_datetime(end_date).date().year
+    _, summary_path, _ = snapshot_paths(snapshot_year)
     if not summary_path.exists():
         return None
     iso_year, iso_week = get_week_key(end_date)
@@ -786,7 +820,9 @@ with st.sidebar:
     role = st.selectbox("Mode", ["User", "Admin"], index=0)
     today = datetime.now().date()
     default_start = date(today.year, 1, 1)
-    default_end = today
+    latest_end = latest_snapshot_period_end(today.year)
+    default_end = latest_end or today
+    latest_fetched_at = latest_snapshot_fetched_at(today.year)
 
     if role == "User":
         start_date = st.date_input("Start Date", default_start, disabled=True)
@@ -796,7 +832,7 @@ with st.sidebar:
         end_date = st.date_input("End Date", default_end)
     use_cached_week = st.checkbox("Use cached weekly snapshot if available", True)
     auto_refresh_stale = st.checkbox("Auto-refresh stale weekly snapshot", True)
-    fetch = st.button("Fetch and Calculate")
+    fetch = st.button("Fetch and Calculate", disabled=(role == "User"))
 
 if fetch:
     with st.spinner("Fetching events and calculating..."):
@@ -854,10 +890,18 @@ else:
     cached_summary, cached_events = load_range_snapshot(start_date, end_date)
     if cached_events is not None and not cached_events.empty:
         summary_df, updated_events_df = summarize_vacation(cached_events, start_date, end_date)
-        st.caption("Loaded shared snapshot automatically.")
+        if latest_fetched_at is not None:
+            st.caption(f"Loaded shared snapshot automatically. Last snapshot: {latest_fetched_at.strftime('%Y-%m-%d %H:%M')}")
+        else:
+            st.caption("Loaded shared snapshot automatically.")
         render_results(summary_df, updated_events_df, end_date)
     elif cached_summary is not None:
         summary_df = cached_summary.drop(columns=[c for c in cached_summary.columns if c.startswith("Remaining ")], errors="ignore")
         updated_events_df = cached_events if cached_events is not None else pd.DataFrame()
-        st.caption("Loaded shared snapshot automatically.")
+        if latest_fetched_at is not None:
+            st.caption(f"Loaded shared snapshot automatically. Last snapshot: {latest_fetched_at.strftime('%Y-%m-%d %H:%M')}")
+        else:
+            st.caption("Loaded shared snapshot automatically.")
         render_results(summary_df, updated_events_df, end_date)
+    else:
+        st.info("No shared snapshot available yet. An admin needs to create one.")
