@@ -783,8 +783,17 @@ auth_mode = None
 
 with st.sidebar:
     st.header("Filter Settings")
-    start_date = st.date_input("Start Date", datetime.now() - timedelta(days=30))
-    end_date = st.date_input("End Date", datetime.now() + timedelta(days=30))
+    role = st.selectbox("Mode", ["User", "Admin"], index=0)
+    today = datetime.now().date()
+    default_start = date(today.year, 1, 1)
+    default_end = today
+
+    if role == "User":
+        start_date = st.date_input("Start Date", default_start, disabled=True)
+        end_date = st.date_input("End Date", default_end, disabled=True)
+    else:
+        start_date = st.date_input("Start Date", default_start)
+        end_date = st.date_input("End Date", default_end)
     use_cached_week = st.checkbox("Use cached weekly snapshot if available", True)
     auto_refresh_stale = st.checkbox("Auto-refresh stale weekly snapshot", True)
     fetch = st.button("Fetch and Calculate")
