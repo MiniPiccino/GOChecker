@@ -235,6 +235,52 @@ def snapshot_paths():
     return base, base / "summary_weekly.csv", base / "events_weekly.csv"
 
 
+def snapshot_latest_paths():
+    base = Path("snapshots")
+    return base, base / "summary_weekly_latest.csv", base / "events_weekly_latest.csv"
+
+
+def load_latest_snapshot(start_date, end_date):
+    _, summary_path, events_path = snapshot_latest_paths()
+    if not summary_path.exists():
+        return None, None
+
+    try:
+        summary_df = pd.read_csv(summary_path)
+    except Exception as exc:
+        st.warning(f"Failed to load cached latest summary snapshot: {exc}")
+        summary_df = None
+
+    if summary_df is not None and ("Period Start" not in summary_df.columns or "Period End" not in summary_df.columns):
+        summary_df = None
+
+    start_date = pd.to_datetime(start_date).date()
+    end_date = pd.to_datetime(end_date).date()
+
+    in_range = pd.DataFrame()
+    if summary_df is not None:
+        summary_df["Period Start"] = pd.to_datetime(summary_df["Period Start"], errors="coerce").dt.date
+        summary_df["Period End"] = pd.to_datetime(summary_df["Period End"], errors="coerce").dt.date
+        in_range = summary_df[
+            (summary_df["Period End"] >= start_date) & (summary_df["Period Start"] <= end_date)
+        ].copy()
+
+    events_df = pd.DataFrame()
+    if events_path.exists():
+        try:
+            events_df = pd.read_csv(events_path)
+            if "Date" in events_df.columns:
+                events_df["Date"] = pd.to_datetime(events_df["Date"], errors="coerce").dt.date
+                events_df = events_df[(events_df["Date"] >= start_date) & (events_df["Date"] <= end_date)]
+                if "Name" in events_df.columns:
+                    events_df = events_df.drop_duplicates(subset=["Name", "Date"])
+        except Exception as exc:
+            st.warning(f"Failed to load cached latest events snapshot: {exc}")
+
+    summary_agg = in_range.reset_index(drop=True) if not in_range.empty else None
+    return summary_agg, events_df.reset_index(drop=True)
+
+
 def load_week_snapshot(end_date):
     _, summary_path, events_path = snapshot_paths()
     iso_year, iso_week = get_week_key(end_date)
@@ -256,6 +302,10 @@ def load_week_snapshot(end_date):
 
 
 def load_range_snapshot(start_date, end_date):
+    latest_summary, latest_events = load_latest_snapshot(start_date, end_date)
+    if latest_summary is not None:
+        return latest_summary, latest_events
+
     _, summary_path, events_path = snapshot_paths()
     if not summary_path.exists():
         return None, None
@@ -299,6 +349,7 @@ def load_range_snapshot(start_date, end_date):
 
 def save_week_snapshot(start_date, end_date, summary_df, events_df):
     base, summary_path, events_path = snapshot_paths()
+    _, latest_summary_path, latest_events_path = snapshot_latest_paths()
     base.mkdir(exist_ok=True)
     iso_year, iso_week = get_week_key(end_date)
     start_str = pd.to_datetime(start_date).date().isoformat()
@@ -325,6 +376,18 @@ def save_week_snapshot(start_date, end_date, summary_df, events_df):
 
     persist(summary_path, summary_df)
     persist(events_path, events_df)
+
+    def persist_latest(path, df):
+        df_copy = df.copy()
+        df_copy["Year"] = iso_year
+        df_copy["Week"] = iso_week
+        df_copy["Period Start"] = start_str
+        df_copy["Period End"] = end_str
+        df_copy["Fetched At"] = fetched_at
+        df_copy.to_csv(path, index=False)
+
+    persist_latest(latest_summary_path, summary_df)
+    persist_latest(latest_events_path, events_df)
 
 
 def snapshot_fetched_at(end_date):
@@ -646,6 +709,47 @@ def build_vacation_calendar_html(events_df, month_date):
     """
 
 
+def render_results(summary_df, updated_events_df, end_date):
+    st.success("Done!")
+    st.subheader("Vacation Summary")
+    st.dataframe(summary_df)
+
+    st.subheader("Testing Zone")
+    calendar_month = st.date_input("Calendar Month", end_date, key="calendar_month")
+    calendar_html = build_vacation_calendar_html(updated_events_df, calendar_month)
+    if not calendar_html:
+        st.info("No vacations to display in the calendar for the selected month.")
+    else:
+        st.markdown(
+            """
+            <style>
+            .vacation-calendar { font-family: "Trebuchet MS", "Segoe UI", sans-serif; }
+            .vacation-calendar .calendar-header { font-size: 1.2rem; font-weight: 700; margin-bottom: 0.5rem; }
+            .vacation-calendar table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+            .vacation-calendar th { text-align: left; font-size: 0.85rem; padding: 0.4rem; color: #333; border-bottom: 1px solid #ddd; }
+            .vacation-calendar td { vertical-align: top; padding: 0.4rem; border: 1px solid #eee; height: 90px; background: #fafafa; }
+            .vacation-calendar td.has-vac { background: #fff4d6; border-color: #f2d08b; }
+            .vacation-calendar td.muted { background: #f5f5f5; color: #999; }
+            .vacation-calendar .date { font-weight: 700; margin-bottom: 0.25rem; }
+            .vacation-calendar .names { font-size: 0.78rem; line-height: 1.2; color: #333; }
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.markdown(calendar_html, unsafe_allow_html=True)
+
+    display_cols = [c for c in ["Date", "Name", "Weekday", "Subject", "Used Status", "Carryover Window"] if c in updated_events_df.columns]
+    if display_cols:
+        st.caption("Selected vacations in the current date range")
+        st.dataframe(updated_events_df.sort_values(["Date", "Name"])[display_cols], use_container_width=True)
+
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+        summary_df.to_excel(writer, sheet_name="Summary", index=False)
+        updated_events_df.to_excel(writer, sheet_name="Events", index=False)
+
+    st.download_button("Download Excel Summary", buffer.getvalue(), file_name="vacation_summary.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
 # --- Streamlit UI ---
 st.title("Vacation Tracker - GO Events Summary")
 
@@ -674,9 +778,8 @@ def get_auth_headers():
         st.session_state["auth_mode"] = auth_mode
     return headers, auth_mode
 
-headers, auth_mode = get_auth_headers()
-if headers is None or auth_mode is None:
-    st.stop()
+headers = None
+auth_mode = None
 
 with st.sidebar:
     st.header("Filter Settings")
@@ -711,6 +814,10 @@ if fetch:
                     st.success("Loaded cached snapshot for selected date range.")
 
         if not cache_used:
+            headers, auth_mode = get_auth_headers()
+            if headers is None or auth_mode is None:
+                st.error("Login required to fetch fresh calendar data.")
+                st.stop()
             # For app-only auth you must target a specific mailbox.
             target_user = None
             if auth_mode == "app":
@@ -733,43 +840,15 @@ if fetch:
             save_week_snapshot(start_date, end_date, summary_df, updated_events_df)
             st.caption(f"Snapshot saved for {iso_year}-W{iso_week}.")
 
-        st.success("Done!")
-        st.subheader("Vacation Summary")
-        st.dataframe(summary_df)  # ✅ Only display the summary
-
-        st.subheader("Testing Zone")
-        calendar_month = st.date_input("Calendar Month", end_date, key="calendar_month")
-        calendar_html = build_vacation_calendar_html(updated_events_df, calendar_month)
-        if not calendar_html:
-            st.info("No vacations to display in the calendar for the selected month.")
-        else:
-            st.markdown(
-                """
-                <style>
-                .vacation-calendar { font-family: "Trebuchet MS", "Segoe UI", sans-serif; }
-                .vacation-calendar .calendar-header { font-size: 1.2rem; font-weight: 700; margin-bottom: 0.5rem; }
-                .vacation-calendar table { width: 100%; border-collapse: collapse; table-layout: fixed; }
-                .vacation-calendar th { text-align: left; font-size: 0.85rem; padding: 0.4rem; color: #333; border-bottom: 1px solid #ddd; }
-                .vacation-calendar td { vertical-align: top; padding: 0.4rem; border: 1px solid #eee; height: 90px; background: #fafafa; }
-                .vacation-calendar td.has-vac { background: #fff4d6; border-color: #f2d08b; }
-                .vacation-calendar td.muted { background: #f5f5f5; color: #999; }
-                .vacation-calendar .date { font-weight: 700; margin-bottom: 0.25rem; }
-                .vacation-calendar .names { font-size: 0.78rem; line-height: 1.2; color: #333; }
-                </style>
-                """,
-                unsafe_allow_html=True,
-            )
-            st.markdown(calendar_html, unsafe_allow_html=True)
-
-        display_cols = [c for c in ["Date", "Name", "Weekday", "Subject", "Used Status", "Carryover Window"] if c in updated_events_df.columns]
-        if display_cols:
-            st.caption("Selected vacations in the current date range")
-            st.dataframe(updated_events_df.sort_values(["Date", "Name"])[display_cols], use_container_width=True)
-
-        # ✅ Export both to Excel
-        buffer = io.BytesIO()
-        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-            summary_df.to_excel(writer, sheet_name="Summary", index=False)
-            updated_events_df.to_excel(writer, sheet_name="Events", index=False)
-
-        st.download_button("Download Excel Summary", buffer.getvalue(), file_name="vacation_summary.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        render_results(summary_df, updated_events_df, end_date)
+else:
+    cached_summary, cached_events = load_range_snapshot(start_date, end_date)
+    if cached_events is not None and not cached_events.empty:
+        summary_df, updated_events_df = summarize_vacation(cached_events, start_date, end_date)
+        st.caption("Loaded shared snapshot automatically.")
+        render_results(summary_df, updated_events_df, end_date)
+    elif cached_summary is not None:
+        summary_df = cached_summary.drop(columns=[c for c in cached_summary.columns if c.startswith("Remaining ")], errors="ignore")
+        updated_events_df = cached_events if cached_events is not None else pd.DataFrame()
+        st.caption("Loaded shared snapshot automatically.")
+        render_results(summary_df, updated_events_df, end_date)
