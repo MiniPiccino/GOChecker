@@ -743,10 +743,14 @@ def build_vacation_calendar_html(events_df, month_date):
     """
 
 
-def render_results(summary_df, updated_events_df, end_date):
+def render_results(summary_df, updated_events_df, end_date, last_scanned=None):
     st.success("Done!")
+    if last_scanned is not None:
+        st.info(f"Last time scanned: {last_scanned.strftime('%Y-%m-%d %H:%M')}")
     st.subheader("Vacation Summary")
-    st.dataframe(summary_df)
+    meta_cols = ["Year", "Week", "Period Start", "Period End", "Fetched At"]
+    summary_view = summary_df.drop(columns=[c for c in meta_cols if c in summary_df.columns], errors="ignore")
+    st.dataframe(summary_view)
 
     st.subheader("Testing Zone")
     calendar_month = st.date_input("Calendar Month", end_date, key="calendar_month")
@@ -885,23 +889,18 @@ if fetch:
             save_week_snapshot(start_date, end_date, summary_df, updated_events_df)
             st.caption(f"Snapshot saved for {iso_year}-W{iso_week}.")
 
-        render_results(summary_df, updated_events_df, end_date)
+        latest_scanned = latest_snapshot_fetched_at(end_date.year)
+        render_results(summary_df, updated_events_df, end_date, last_scanned=latest_scanned)
 else:
     cached_summary, cached_events = load_range_snapshot(start_date, end_date)
     if cached_events is not None and not cached_events.empty:
         summary_df, updated_events_df = summarize_vacation(cached_events, start_date, end_date)
-        if latest_fetched_at is not None:
-            st.caption(f"Loaded shared snapshot automatically. Last snapshot: {latest_fetched_at.strftime('%Y-%m-%d %H:%M')}")
-        else:
-            st.caption("Loaded shared snapshot automatically.")
-        render_results(summary_df, updated_events_df, end_date)
+        st.caption("Loaded shared snapshot automatically.")
+        render_results(summary_df, updated_events_df, end_date, last_scanned=latest_fetched_at)
     elif cached_summary is not None:
         summary_df = cached_summary.drop(columns=[c for c in cached_summary.columns if c.startswith("Remaining ")], errors="ignore")
         updated_events_df = cached_events if cached_events is not None else pd.DataFrame()
-        if latest_fetched_at is not None:
-            st.caption(f"Loaded shared snapshot automatically. Last snapshot: {latest_fetched_at.strftime('%Y-%m-%d %H:%M')}")
-        else:
-            st.caption("Loaded shared snapshot automatically.")
-        render_results(summary_df, updated_events_df, end_date)
+        st.caption("Loaded shared snapshot automatically.")
+        render_results(summary_df, updated_events_df, end_date, last_scanned=latest_fetched_at)
     else:
         st.info("No shared snapshot available yet. An admin needs to create one.")
