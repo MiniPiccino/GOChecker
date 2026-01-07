@@ -292,7 +292,12 @@ def _github_get_json(path, ref):
     if response.status_code == 404:
         return None
     if response.status_code != 200:
-        st.warning(f"GitHub snapshot read failed ({response.status_code}).")
+        detail = ""
+        try:
+            detail = response.json().get("message", "")
+        except Exception:
+            detail = response.text[:200]
+        st.warning(f"GitHub snapshot read failed ({response.status_code}). {detail}")
         return None
     return response.json()
 
@@ -328,7 +333,12 @@ def _github_write_file(path, content, message):
         return False
 
     if response.status_code not in (200, 201):
-        st.warning(f"GitHub snapshot write failed ({response.status_code}).")
+        detail = ""
+        try:
+            detail = response.json().get("message", "")
+        except Exception:
+            detail = response.text[:200]
+        st.warning(f"GitHub snapshot write failed ({response.status_code}). {detail}")
         return False
     return True
 
