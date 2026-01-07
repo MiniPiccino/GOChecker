@@ -18,6 +18,7 @@ from urllib.parse import quote
 import msal
 from collections import defaultdict
 import calendar
+import base64
 
 #nest_asyncio.apply()
 load_dotenv() 
@@ -231,21 +232,21 @@ def get_week_key(end_date):
 
 
 def snapshot_paths(snapshot_year):
-    base = Path("snapshots")
-    return base, base / f"summary_{snapshot_year}.csv", base / f"events_{snapshot_year}.csv"
+    base = _snapshots_base()
+    return base, f"{base}/summary_{snapshot_year}.csv", f"{base}/events_{snapshot_year}.csv"
 
 
 def snapshot_latest_paths(snapshot_year):
-    base = Path("snapshots")
-    return base, base / f"summary_latest_{snapshot_year}.csv", base / f"events_latest_{snapshot_year}.csv"
+    base = _snapshots_base()
+    return base, f"{base}/summary_latest_{snapshot_year}.csv", f"{base}/events_latest_{snapshot_year}.csv"
 
 
 def latest_snapshot_period_end(snapshot_year):
     _, summary_path, _ = snapshot_latest_paths(snapshot_year)
-    if not summary_path.exists():
-        return None
     try:
-        df = pd.read_csv(summary_path, usecols=["Period End"])
+        df = _snapshot_read_csv(summary_path, usecols=["Period End"])
+        if df is None:
+            return None
         if df.empty:
             return None
         df["Period End"] = pd.to_datetime(df["Period End"], errors="coerce").dt.date
@@ -255,12 +256,113 @@ def latest_snapshot_period_end(snapshot_year):
         return None
 
 
-def latest_snapshot_fetched_at(snapshot_year):
-    _, summary_path, _ = snapshot_latest_paths(snapshot_year)
-    if not summary_path.exists():
+def _snapshots_base():
+    base = _get_conf("GITHUB_SNAPSHOTS_PATH", "snapshots") or "snapshots"
+    return base.strip("/").strip()
+
+
+def _github_config():
+    token = _get_conf("GITHUB_TOKEN")
+    repo = _get_conf("GITHUB_REPO")
+    branch = _get_conf("GITHUB_BRANCH", "master")
+    return token, repo, branch
+
+
+def _github_enabled():
+    token, repo, _ = _github_config()
+    return bool(token and repo)
+
+
+def _github_headers(token):
+    return {
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github+json",
+    }
+
+
+def _github_get_json(path, ref):
+    token, repo, _ = _github_config()
+    url = f"https://api.github.com/repos/{repo}/contents/{path}?ref={ref}"
+    try:
+        response = requests.get(url, headers=_github_headers(token), timeout=15)
+    except Exception as exc:
+        st.warning(f"Failed to reach GitHub for snapshots: {exc}")
+        return None
+
+    if response.status_code == 404:
+        return None
+    if response.status_code != 200:
+        st.warning(f"GitHub snapshot read failed ({response.status_code}).")
+        return None
+    return response.json()
+
+
+def _github_read_file(path):
+    token, _, branch = _github_config()
+    payload = _github_get_json(path, branch)
+    if not payload or "content" not in payload:
         return None
     try:
-        df = pd.read_csv(summary_path, usecols=["Fetched At"])
+        return base64.b64decode(payload["content"]).decode("utf-8")
+    except Exception as exc:
+        st.warning(f"Failed to decode GitHub snapshot: {exc}")
+        return None
+
+
+def _github_write_file(path, content, message):
+    token, repo, branch = _github_config()
+    meta = _github_get_json(path, branch)
+    payload = {
+        "message": message,
+        "content": base64.b64encode(content.encode("utf-8")).decode("ascii"),
+        "branch": branch,
+    }
+    if meta and "sha" in meta:
+        payload["sha"] = meta["sha"]
+
+    url = f"https://api.github.com/repos/{repo}/contents/{path}"
+    try:
+        response = requests.put(url, headers=_github_headers(token), json=payload, timeout=20)
+    except Exception as exc:
+        st.warning(f"Failed to write GitHub snapshot: {exc}")
+        return False
+
+    if response.status_code not in (200, 201):
+        st.warning(f"GitHub snapshot write failed ({response.status_code}).")
+        return False
+    return True
+
+
+def _snapshot_read_csv(path, usecols=None):
+    if _github_enabled():
+        content = _github_read_file(path)
+        if content is None:
+            return None
+        return pd.read_csv(io.StringIO(content), usecols=usecols)
+
+    local_path = Path(path)
+    if not local_path.exists():
+        return None
+    return pd.read_csv(local_path, usecols=usecols)
+
+
+def _snapshot_write_csv(path, df, message):
+    csv_text = df.to_csv(index=False)
+    if _github_enabled():
+        _github_write_file(path, csv_text, message=message)
+        return
+
+    local_path = Path(path)
+    local_path.parent.mkdir(exist_ok=True)
+    local_path.write_text(csv_text)
+
+
+def latest_snapshot_fetched_at(snapshot_year):
+    _, summary_path, _ = snapshot_latest_paths(snapshot_year)
+    try:
+        df = _snapshot_read_csv(summary_path, usecols=["Fetched At"])
+        if df is None:
+            return None
         if df.empty:
             return None
         ts = pd.to_datetime(df["Fetched At"], errors="coerce").max()
@@ -272,11 +374,11 @@ def latest_snapshot_fetched_at(snapshot_year):
 def load_latest_snapshot(start_date, end_date):
     snapshot_year = pd.to_datetime(end_date).date().year
     _, summary_path, events_path = snapshot_latest_paths(snapshot_year)
-    if not summary_path.exists():
-        return None, None
 
     try:
-        summary_df = pd.read_csv(summary_path)
+        summary_df = _snapshot_read_csv(summary_path)
+        if summary_df is None:
+            return None, None
     except Exception as exc:
         st.warning(f"Failed to load cached latest summary snapshot: {exc}")
         summary_df = None
@@ -296,16 +398,17 @@ def load_latest_snapshot(start_date, end_date):
         ].copy()
 
     events_df = pd.DataFrame()
-    if events_path.exists():
-        try:
-            events_df = pd.read_csv(events_path)
-            if "Date" in events_df.columns:
-                events_df["Date"] = pd.to_datetime(events_df["Date"], errors="coerce").dt.date
-                events_df = events_df[(events_df["Date"] >= start_date) & (events_df["Date"] <= end_date)]
-                if "Name" in events_df.columns:
-                    events_df = events_df.drop_duplicates(subset=["Name", "Date"])
-        except Exception as exc:
-            st.warning(f"Failed to load cached latest events snapshot: {exc}")
+    try:
+        events_df = _snapshot_read_csv(events_path)
+        if events_df is None:
+            events_df = pd.DataFrame()
+        if "Date" in events_df.columns:
+            events_df["Date"] = pd.to_datetime(events_df["Date"], errors="coerce").dt.date
+            events_df = events_df[(events_df["Date"] >= start_date) & (events_df["Date"] <= end_date)]
+            if "Name" in events_df.columns:
+                events_df = events_df.drop_duplicates(subset=["Name", "Date"])
+    except Exception as exc:
+        st.warning(f"Failed to load cached latest events snapshot: {exc}")
 
     summary_agg = in_range.reset_index(drop=True) if not in_range.empty else None
     return summary_agg, events_df.reset_index(drop=True)
@@ -315,16 +418,18 @@ def load_week_snapshot(end_date):
     snapshot_year = pd.to_datetime(end_date).date().year
     _, summary_path, events_path = snapshot_paths(snapshot_year)
     iso_year, iso_week = get_week_key(end_date)
-    if not summary_path.exists():
-        return None, None
     try:
-        summary_df = pd.read_csv(summary_path)
+        summary_df = _snapshot_read_csv(summary_path)
+        if summary_df is None:
+            return None, None
         week_summary = summary_df[(summary_df["Year"] == iso_year) & (summary_df["Week"] == iso_week)]
         if week_summary.empty:
             return None, None
         events_df = pd.DataFrame()
-        if events_path.exists():
-            events_df = pd.read_csv(events_path)
+        events_df = _snapshot_read_csv(events_path)
+        if events_df is None:
+            events_df = pd.DataFrame()
+        if not events_df.empty:
             events_df = events_df[(events_df["Year"] == iso_year) & (events_df["Week"] == iso_week)]
         return week_summary.reset_index(drop=True), events_df.reset_index(drop=True)
     except Exception as exc:
@@ -339,11 +444,11 @@ def load_range_snapshot(start_date, end_date):
 
     snapshot_year = pd.to_datetime(end_date).date().year
     _, summary_path, events_path = snapshot_paths(snapshot_year)
-    if not summary_path.exists():
-        return None, None
 
     try:
-        summary_df = pd.read_csv(summary_path)
+        summary_df = _snapshot_read_csv(summary_path)
+        if summary_df is None:
+            return None, None
     except Exception as exc:
         st.warning(f"Failed to load cached summary snapshot: {exc}")
         summary_df = None
@@ -364,16 +469,15 @@ def load_range_snapshot(start_date, end_date):
 
     # Load and filter events within date range.
     events_df = pd.DataFrame()
-    if events_path.exists():
-        try:
-            events_df = pd.read_csv(events_path)
-            if "Date" in events_df.columns:
-                events_df["Date"] = pd.to_datetime(events_df["Date"], errors="coerce").dt.date
-                events_df = events_df[(events_df["Date"] >= start_date) & (events_df["Date"] <= end_date)]
-                if "Name" in events_df.columns:
-                    events_df = events_df.drop_duplicates(subset=["Name", "Date"])
-        except Exception as exc:
-            st.warning(f"Failed to load cached events snapshot: {exc}")
+    try:
+        events_df = _snapshot_read_csv(events_path) or pd.DataFrame()
+        if "Date" in events_df.columns:
+            events_df["Date"] = pd.to_datetime(events_df["Date"], errors="coerce").dt.date
+            events_df = events_df[(events_df["Date"] >= start_date) & (events_df["Date"] <= end_date)]
+            if "Name" in events_df.columns:
+                events_df = events_df.drop_duplicates(subset=["Name", "Date"])
+    except Exception as exc:
+        st.warning(f"Failed to load cached events snapshot: {exc}")
 
     summary_agg = in_range.reset_index(drop=True) if not in_range.empty else None
     return summary_agg, events_df.reset_index(drop=True)
@@ -383,7 +487,6 @@ def save_week_snapshot(start_date, end_date, summary_df, events_df):
     snapshot_year = pd.to_datetime(end_date).date().year
     base, summary_path, events_path = snapshot_paths(snapshot_year)
     _, latest_summary_path, latest_events_path = snapshot_latest_paths(snapshot_year)
-    base.mkdir(exist_ok=True)
     iso_year, iso_week = get_week_key(end_date)
     start_str = pd.to_datetime(start_date).date().isoformat()
     end_str = pd.to_datetime(end_date).date().isoformat()
@@ -397,15 +500,17 @@ def save_week_snapshot(start_date, end_date, summary_df, events_df):
         df_copy["Period End"] = end_str
         df_copy["Fetched At"] = fetched_at
 
-        if path.exists():
-            existing = pd.read_csv(path)
+        existing = _snapshot_read_csv(path)
+        if existing is None:
+            existing = pd.DataFrame()
+        if not existing.empty:
             # Drop existing rows for the same week to avoid duplicates.
             existing = existing[(existing["Year"] != iso_year) | (existing["Week"] != iso_week)]
             combined = pd.concat([existing, df_copy], ignore_index=True)
         else:
             combined = df_copy
 
-        combined.to_csv(path, index=False)
+        _snapshot_write_csv(path, combined, message=f"Update snapshot {snapshot_year}-W{iso_week:02d}")
 
     persist(summary_path, summary_df)
     persist(events_path, events_df)
@@ -417,7 +522,7 @@ def save_week_snapshot(start_date, end_date, summary_df, events_df):
         df_copy["Period Start"] = start_str
         df_copy["Period End"] = end_str
         df_copy["Fetched At"] = fetched_at
-        df_copy.to_csv(path, index=False)
+        _snapshot_write_csv(path, df_copy, message=f"Update latest snapshot {snapshot_year}-W{iso_week:02d}")
 
     persist_latest(latest_summary_path, summary_df)
     persist_latest(latest_events_path, events_df)
@@ -426,11 +531,11 @@ def save_week_snapshot(start_date, end_date, summary_df, events_df):
 def snapshot_fetched_at(end_date):
     snapshot_year = pd.to_datetime(end_date).date().year
     _, summary_path, _ = snapshot_paths(snapshot_year)
-    if not summary_path.exists():
-        return None
     iso_year, iso_week = get_week_key(end_date)
     try:
-        meta_df = pd.read_csv(summary_path, usecols=["Year", "Week", "Fetched At"])
+        meta_df = _snapshot_read_csv(summary_path, usecols=["Year", "Week", "Fetched At"])
+        if meta_df is None:
+            return None
         row = meta_df[(meta_df["Year"] == iso_year) & (meta_df["Week"] == iso_week)]
         if row.empty:
             return None
